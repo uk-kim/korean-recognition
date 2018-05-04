@@ -108,7 +108,7 @@ class DataSet:
 
         n_total_data = len(path_list)
         n_train_data = int(len(path_list) * args['train_set_ratio'])
-        print(n_total_data, n_train_data)
+
         idxs = np.arange(n_total_data)
         np.random.shuffle(idxs)
 

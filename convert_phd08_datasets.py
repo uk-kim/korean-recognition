@@ -2,7 +2,7 @@
 This script is for converting phd08 dataset which is consisted of text files to image file format.
 First, load and parse text files and create new folder as korean letter that corresponding to text file.
 Second, Convert text file to image format with some steps include Cropping, Gaussian blur..
-Final, Save the converted images to folder before you create.
+Finally, Save the converted images to folder which you created before.
 '''
 
 import os
