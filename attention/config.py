@@ -14,3 +14,8 @@ eps = 1e-7
 lr = 1e-3
 patch_size = 8
 std = 0.03
+
+channels = 1
+g_depth = 3  # depth of glimpse sensors
+
+sensor_bandwidth = 12

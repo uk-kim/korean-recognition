@@ -25,7 +25,6 @@ def load_images(base_path, paths):
     images = []
     for path in paths:
         path = os.path.join(base_path, path)
-        print(path)
         if os.path.exists(path):
             images.append(cv2.imread(path, 0))
 
@@ -119,7 +118,7 @@ class DataSet:
     def get_image_paths(self, base_path, ext='png', sampling=False, n_sample=100):
         image_path_list = None
         label_list = None
-        for letter in tqdm(self.idx_to_label[:]):
+        for letter in tqdm(self.idx_to_label[:3]):
             _, label = utils.decompose_korean_letter(letter,
                                                      self.i2c_i,
                                                      self.i2c_m,

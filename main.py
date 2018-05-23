@@ -6,6 +6,8 @@ import unicodedata
 import cv2
 import numpy as np
 
+import tensorflow as tf
+
 
 if __name__ == '__main__':
     args = {
@@ -22,14 +24,44 @@ if __name__ == '__main__':
     dataset = DataSet(args)
 
     images, labels = dataset.train_data.next_batch(10)
-
     print(images.shape, labels.shape)
+
+    x = tf.placeholder(tf.float32, [None, 28, 28, 1])
+    glimpse = tf.image.extract_glimpse(x, (14, 14), [(0.5, 0.5)],
+                                       normalized=True, centered=False)
+    '''
+    tf.image.extract_glimpse
+      args
+        input : 이미지
+        size : 패치 사이즈
+        offsets : loc 좌표
+        normalized : True일때, loc 좌표를 0~1로 표
+        centered : 중심 좌표를 원점으로?
+    '''
+
+    sess = tf.Session()
 
     for i, arg in enumerate(zip(images, labels)):
         image, label = arg
+
+        print(image.shape)
+        img_flat = np.reshape(image, [1, 28, 28, 1])
+        img_flat = img_flat.astype(np.float32) / 255
+
+        g_list = sess.run(glimpse, feed_dict={x: img_flat})
+
+        for i, patch in enumerate(g_list):
+            # print(i, patch.shape)
+            cv2.imshow('%d th Glimpse' % (i+1), patch)
+
         cv2.imshow(str(label), image)
-        cv2.waitKey()
+        key = cv2.waitKey(0)
+
+        if key == ord('q'):
+            break
     cv2.destroyAllWindows()
+
+
 # import numpy as np
 #
 # a = [1, 2, 3, 4, 5, 6]
