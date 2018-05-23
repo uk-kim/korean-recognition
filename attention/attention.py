@@ -23,7 +23,7 @@ def glimpse_sensor(img, norm_loc):
 
     img = tf.reshape(img, (-1, img_sz, img_sz, channels))
 
-    batch_size = img.get_shape().as_list()[0]
+    batch_size = 1#img.get_shape().as_list()[0]
 
     # process each image individually
     zooms = []
@@ -113,6 +113,7 @@ def model(x, w, b):
 
     state1 = rnn1.zero_state(None, tf.float32)
     for t in range(T):
+        
         gn = glimpse_network(x, w, b, loc[t])
         with tf.variable_scope('rnn1', reuse=(t != 0)):
             h1, state1 = rnn1(gn, state1)

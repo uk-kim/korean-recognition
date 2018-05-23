@@ -7,6 +7,7 @@ import cv2
 import numpy as np
 
 import tensorflow as tf
+from attention.attention import glimpse_sensor
 
 
 if __name__ == '__main__':
@@ -27,8 +28,14 @@ if __name__ == '__main__':
     print(images.shape, labels.shape)
 
     x = tf.placeholder(tf.float32, [None, 28, 28, 1])
-    glimpse = tf.image.extract_glimpse(x, (14, 14), [(0.5, 0.5)],
-                                       normalized=True, centered=False)
+
+    loc = tf.constant([[0.5, 0.5]])
+
+    # glimpse = tf.image.extract_glimpse(x, (14, 14), [(0.5, 0.5)],
+    #                                    normalized=True, centered=False)
+
+    glimpse = glimpse_sensor(x, loc)
+
     '''
     tf.image.extract_glimpse
       args
@@ -50,8 +57,9 @@ if __name__ == '__main__':
 
         g_list = sess.run(glimpse, feed_dict={x: img_flat})
 
-        for i, patch in enumerate(g_list):
+        for i, patch in enumerate(g_list[0]):
             # print(i, patch.shape)
+            print(i, patch.shape)
             cv2.imshow('%d th Glimpse' % (i+1), patch)
 
         cv2.imshow(str(label), image)
