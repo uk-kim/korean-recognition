@@ -56,7 +56,7 @@ if __name__ == '__main__':
         img_flat = img_flat.astype(np.float32) / 255
 
         g_list = sess.run(glimpse, feed_dict={x: img_flat})
-
+        print(g_list.shape)
         for i, patch in enumerate(g_list[0]):
             # print(i, patch.shape)
             print(i, patch.shape)

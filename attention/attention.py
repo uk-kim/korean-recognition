@@ -3,9 +3,7 @@ Reference
   DRAM : https://github.com/atulkum/paper_implementation/blob/master/MultipleObjectRecognitionWithVisualAttention.ipynb
   RAM : https://github.com/jtkim-kaist/ram_modified/blob/master/ram_modified.py
 '''
-
 import tensorflow as tf
-import numpy as np
 
 from attention.config import *
 
@@ -66,62 +64,122 @@ def glimpse_sensor(img, norm_loc):
     return zooms
 
 
+def get_glimpse_feature(glimpse, w, b):
+    # reshape glimpse tensor as [batch_size, height, width, g_depth]
+    trsp_glimpse = tf.transpose(glimpse, [0, 2, 3, 1])
 
-def glimpse_network(x, w, b, loc):
-    x_g = tf.image.extract_glimpse(x, tf.shape(patch_size, patch_size), loc)
-    x_g = tf.reshape(x_g, shape=[-1, patch_size, patch_size, 1])
-
-    conv1 = conv2d(x_g, w['wg1'], b['bg1'])
+    conv1 = conv2d(trsp_glimpse, w['wg1'], b['bg1'])
     conv2 = conv2d(conv1, w['wg2'], b['bg2'])
     conv3 = conv2d(conv2, w['wg3'], b['bg3'])
 
-    fc1 = tf.reshape(conv3, [-1, w['wg'].get_shape().as_list()[0]])
-    fc1 = tf.add(tf.matmul(fc1, w['wg']), b['bg'])
-    Gimage = tf.nn.relu(fc1)
-
-    Gloc = tf.add(tf.matmul(loc, w['wgl']), b['bgl'])
-    gn = tf.multiply(Gimage, Gloc)
-    return gn
+    fc = tf.reshape(conv3, [-1, w['wgfc'].get_shape().as_list()[0]])
+    feature = tf.nn.relu(tf.matmul(fc, w['wgfc']) + b['wgfc'])
+    return feature
 
 
-def context_network(x, w, b):
-    x_g = tf.image.resize_images(x, patch_size, patch_size)
-    x_g = tf.reshape(x_g, shape=[-1, patch_size, patch_size, 1])
+def glimpse_network(img, w, b, loc):
+    # get input using the previous location
+    glimpse_input = glimpse_sensor(img, loc)
 
-    conv1 = conv2d(x_g, w['wc1'], b['bc1'])
+    # the hidden units that process location & the input
+    act_glimpse_hidden = get_glimpse_feature(glimpse_input, w, b)
+    act_loc_hidden = tf.nn.relu(tf.matmul(loc, w['wlh']) + b['wlh'])
+
+    # the hidden units that integrates the location & the glimpses
+    glimpse_feature = tf.matmul(act_glimpse_hidden, w['wgh_gf']) + tf.matmul(act_loc_hidden, w['wlh_gf']) + b['wglh_gf']
+    glimpse_feature = tf.nn.relu(glimpse_feature)
+
+    return glimpse_feature
+
+
+def context_network(img, w, b):
+    img_g = tf.image.resize_images(img, patch_size, patch_size)
+    img_g = tf.reshape(img_g, shape=[-1, patch_size, patch_size, 1])
+
+    conv1 = conv2d(img_g, w['wc1'], b['bc1'])
     conv2 = conv2d(conv1, w['wc2'], b['bc2'])
     conv3 = conv2d(conv2, w['wc3'], b['bc3'])
 
-    fc1 = tf.reshape(conv3, [-1, w['wc'].get_shape().as_list()[0]])
-    fc1 = tf.add(tf.matmul(fc1, w['wc']), b['bc'])
-    return tf.nn.relu(fc1)
+    fc = tf.reshape(conv3, [-1, w['wc'].get_shape().as_list()[0]])
+    fc = tf.add(tf.matmul(fc, w['wc']), b['bc'])
+    return tf.nn.relu(fc)
 
 
-def model(x, w, b):
-    y = [0] * T
-    loc = [0] * (T+1)
+def emission_network(output, w, b):
+    # the next location is computed by the location network next of core-net(Level 2 RNN Cell)
+    core_net_out = tf.stop_gradient(output)
+
+    baseline = tf.sigmoid(tf.matmul(output, w['wbl']) + b['bbl'])
+
+    # compute the next location, then impose noise
+    if eye_centered:
+        # add the last sampled glimpse location
+        # TODO max(-1, min(1, u + N(output, sigma) + prevLoc)
+        mean_loc = tf.maximum(-1.0, tf.minimum(1.0, tf.matmul(core_net_out, w['wh_nl'])))
+    else:
+        mean_loc = tf.matmul(core_net_out, w['wh_nl']) + b['bh_nl']
+        mean_loc = tf.clip_by_value(mean_loc, -1, 1)
+
+    # add noise
+    sample_loc = tf.clip_by_value(mean_loc + tf.random_normal(mean_loc.get_shape(), 0, loc_sd), -1, 1)
+    # don't propagate through the locations
+    sample_loc = tf.stop_gradient(sample_loc)
+
+    return mean_loc, sample_loc, baseline
+
+
+def model(img, w, b):
+    # initialize the location under uniform[-1, 1], for all example in the batch
+    batch_size = 1  # img.get_shape().as_list()[0]
+    mean_locs = []
+    sampled_locs = []
+    outputs = []
+    baselines = []
+
+    # context feature from origin image is initial state of the top core network layer.
+    context_feature = context_network(img, w, b)
 
     rnn1 = tf.nn.rnn_cell.LSTMCell(lstm_size)
     rnn2 = tf.nn.rnn_cell.LSTMCell(lstm_size)
 
     h1 = tf.zeros([None, lstm_size])
-    state2 = context_network(x, w, b)
 
     with tf.variable_scope('rnn2', reuse=False):
-        h2, state2 = rnn2(h1, state2)
-        loc[0] = tf.add(tf.matmul(h2, w['w1']), b['b1'])
+        h2, state2 = rnn2(h1, context_feature)
+        # initialize the location under uniform[-1, 1], for all example in the batch
+        mean_loc, sampled_loc, baseline = emission_network(h2, w, b)
 
-    state1 = rnn1.zero_state(None, tf.float32)
+    mean_locs.append(mean_loc)
+    sampled_loc.append(sampled_loc)
+    baselines.append(baseline)
+
+    # initialize state of 1st rnn layer as zero values
+    state1 = rnn1.zeros_state(None, tf.float32)
+
     for t in range(T):
-        
-        gn = glimpse_network(x, w, b, loc[t])
+        glimpse = glimpse_network(img, w, b, sampled_loc)
+
         with tf.variable_scope('rnn1', reuse=(t != 0)):
-            h1, state1 = rnn1(gn, state1)
-            y[t] = tf.add(tf.matmul(h1, w['wo']), b['bo'])
+            h1, state1 = rnn1(glimpse, state1)
+            output = tf.sigmoid(tf.add(tf.matmul(h1, w['wo']), b['bo']))
         with tf.variable_scope('rnn2', reuse=True):
             h2, state2 = rnn2(h1, state2)
-            loc[t+1] = tf.add(tf.matmul(h2, w['w1']), b['b1'])
+            mean_loc, sampled_loc, baseline = emission_network(h2, w, b)
 
-    return y, loc
+        mean_locs.append(mean_loc)
+        sampled_loc.append(sampled_loc)
+        baselines.append(baseline)
+        outputs.append(output)
+
+    '''
+    outputs : output list of 1st rnn that for decide agent's action(classification)
+    mean_locs : predicted next location
+    sampled_locs : random noise added location from mean_locs
+    baselines : output list of 2nd rnn
+    '''
+    return outputs, mean_locs, sampled_locs, baselines
 
 
+def calc_reward(outputs):
+
+    1
