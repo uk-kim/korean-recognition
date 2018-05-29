@@ -156,6 +156,13 @@ def model(img, w, b):
     # initialize state of 1st rnn layer as zero values
     state1 = rnn1.zeros_state(None, tf.float32)
 
+    '''
+    이 부분에서 output을 계산하는 과정의 weight, bias의 파라미터를 초성, 중성, 종성마다 다르게 해야함
+    즉, 초성의 경우 초성의 가짓수, 종성은 종성의 가짓수 등으로 해야하므로
+    for 문을 T로 돌리는 것이 아니라 초성 따로, 중성 따로, 종성 따로 해서
+    각각 n_glimpse_per_element 수만큼의 포문을 3번 반복해야함
+    3번 반복하는 것을 할 때, weight를 리스트 형태로 반복해서 for 문으로 표현해도 될듯
+    '''
     for t in range(T):
         glimpse = glimpse_network(img, w, b, sampled_loc)
 
@@ -181,5 +188,13 @@ def model(img, w, b):
 
 
 def calc_reward(outputs):
+    '''
+    reward를 계산할 시, 초성 중성 종성에 따라 차원의 수에 유의해야 함
+    그리고 seq2seq 모델의 형태와 같이 시작과 끝을 나타내는 시그널(?)을 만드는 장치를 추가 하면 좋을듯
+     --> 가: ㄱ + ㅏ  (초성 + 중성)
+         감: ㄱ + ㅏ + ㅁ (초성 + 중성 + 종성)
 
+         즉, 중성 다음에 종성이 올지 말지에 대해서는 중성 다음에 시퀀스 종료 시그널을 통해 파악하면 될것 같다.
+         유념해서 반영하자.
+    '''
     1
