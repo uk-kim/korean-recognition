@@ -8,6 +8,7 @@ import numpy as np
 
 import tensorflow as tf
 from attention.attention import glimpse_sensor
+from attention.config import *
 
 
 if __name__ == '__main__':
@@ -24,7 +25,7 @@ if __name__ == '__main__':
 
     dataset = DataSet(args)
 
-    images, labels = dataset.train_data.next_batch(10)
+    images, labels = dataset.train_data.next_batch(1)
     print(images.shape, labels.shape)
 
     x = tf.placeholder(tf.float32, [None, 28, 28, 1])
@@ -47,6 +48,7 @@ if __name__ == '__main__':
     '''
 
     sess = tf.Session()
+    sess.run(tf.initialize_all_variables())
 
     for i, arg in enumerate(zip(images, labels)):
         image, label = arg
@@ -68,6 +70,52 @@ if __name__ == '__main__':
         if key == ord('q'):
             break
     cv2.destroyAllWindows()
+
+
+w = {
+    # for context network
+    'wc1': tf.get_variable('wc1', [3, 3, channels, 16], tf.float32),
+    'wc2': tf.get_variable('wc2', [3, 3, 16, 64], tf.float32),
+    'wc3': tf.get_variable('wc2', [1, 1, 64, 3], tf.float32),
+    'wc_fc': tf.get_variable('wc_fc', [img_len * 3, lstm_size], tf.float32)
+    # for emission network
+    'we_bl': tf.get_variable('we_bl', [lstm_size, lstm_size], tf.float32),
+    'we_h_nl': tf.get_variable('we_h_nl', [lstm_size, 2], tf.float32),
+    # for action network
+    'wai': tf.get_variable('wai', [lstm_size, n_initial_character], tf.float32),
+    'wam': tf.get_variable('wam', [lstm_size, n_middle_character], tf.float32),
+    'waf': tf.get_variable('waf', [lstm_size, n_final_character], tf.float32),
+    # for glimpse network
+    'wg1': tf.get_variable('wg1', [3, 3, channels, 16], tf.float32),
+    'wg2': tf.get_variable('wg2', [3, 3, 16, 64], tf.float32),
+    'wg3': tf.get_variable('wg2', [1, 1, 64, 3], tf.float32),
+    'wg_fc': tf.get_variable('wg_fc', [sensor_bandwidth*sensor_bandwidth * 3, lstm_size], tf.float32)
+    'wg_lh': tf.get_variable('wg_lh', [2, lstm_size], tf.float32),
+    'wg_gh_gf': tf.get_variable('wg_gh_gf', [lstm_size, lstm_size], tf.float32),
+    'wg_lh_gf': tf.get_variable('wg_lh_gf', [lstm_size, lstm_size], tf.float32),
+}
+
+b = {
+    # for context network
+    'bc1': tf.get_variable('bc1', [16], tf.float32),
+    'bc2': tf.get_variable('bc2', [64], tf.float32),
+    'bc3': tf.get_variable('bc3', [3], tf.float32),
+    'bc_fc': tf.get_variable('bc_fc', [lstm_size], tf.float32),
+    # for emission network
+    'be_bl': tf.get_variable('be_bl', [lstm_size], tf.float32),
+    'be_h_nl': tf.get_variable('be_h_nl', [2], tf.float32),
+    # for action network
+    'bai': tf.get_variable('bai', [n_initial_character], tf.float32),
+    'bam': tf.get_variable('bam', [n_middle_character], tf.float32),
+    'baf': tf.get_variable('baf', [n_final_character], tf.float32),
+    # for glimpse network
+    'bg1': tf.get_variable('bg1', [16], tf.float32),
+    'bg2': tf.get_variable('bg2', [64], tf.float32),
+    'bg3': tf.get_variable('bg3', [3], tf.float32),
+    'bg_fc': tf.get_variable('bg_fc', [lstm_size], tf.float32),
+    'bg_lh': tf.get_variable('bg_lh', [lstm_size], tf.float32),
+    'bg_glh_gf': tf.get_variable('bg_glh_gf', [lstm_size], tf.float32),
+}
 
 
 # import numpy as np

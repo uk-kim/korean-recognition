@@ -21,7 +21,7 @@ def glimpse_sensor(img, norm_loc):
 
     img = tf.reshape(img, (-1, img_sz, img_sz, channels))
 
-    batch_size = 1#img.get_shape().as_list()[0]
+    # batch_size = img.get_shape().as_list()[0]
 
     # process each image individually
     zooms = []
@@ -65,15 +65,27 @@ def glimpse_sensor(img, norm_loc):
 
 
 def get_glimpse_feature(glimpse, w, b):
-    # reshape glimpse tensor as [batch_size, height, width, g_depth]
-    trsp_glimpse = tf.transpose(glimpse, [0, 2, 3, 1])
+    # glimpse : [batch_size, g_depth, height, width]
+    #   to conv glimpse, reshape glimpse as [batch_size * g_depth, height, width, 1]
+    #    first, rehape as [batch_size * g_depth, height, width]
+    #    second, expand dims as [batch_size*g_depth, height, width, 1]
+    rsp_glimspe = tf.reshape(glimpse, [-1, sensor_bandwidth, sensor_bandwidth])
+    ep_glimpse = tf.expand_dims(rsp_glimspe, -1)
 
-    conv1 = conv2d(trsp_glimpse, w['wg1'], b['bg1'])
+    conv1 = conv2d(ep_glimpse, w['wg1'], b['bg1'])
     conv2 = conv2d(conv1, w['wg2'], b['bg2'])
     conv3 = conv2d(conv2, w['wg3'], b['bg3'])
 
-    fc = tf.reshape(conv3, [-1, w['wgfc'].get_shape().as_list()[0]])
-    feature = tf.nn.relu(tf.matmul(fc, w['wgfc']) + b['wgfc'])
+    # conv3 : [batch_size * g_depth, height, width, 3]
+    #   conv3 --> fc_in : [batch_size, g_depth, height, width, 3]
+    #                -->  reduce_sum  [batch_size, height, width, 3]
+    last_ch_size = conv3.get_shape().as_list()[-1]
+
+    fc_in = tf.reshape(conv3, [-1, g_depth, sensor_bandwidth, sensor_bandwidth, last_ch_size])
+    fc_in = tf.reduce_sum(fc_in, 1)
+    fc_in = tf.reshape(fc_in, [-1, sensor_bandwidth * sensor_bandwidth * last_ch_size])
+
+    feature = tf.nn.relu(tf.matmul(fc_in, w['wg_fc']) + b['bg_fc'])
     return feature
 
 
@@ -83,25 +95,26 @@ def glimpse_network(img, w, b, loc):
 
     # the hidden units that process location & the input
     act_glimpse_hidden = get_glimpse_feature(glimpse_input, w, b)
-    act_loc_hidden = tf.nn.relu(tf.matmul(loc, w['wlh']) + b['wlh'])
+    act_loc_hidden = tf.nn.relu(tf.matmul(loc, w['wg_lh']) + b['bg_lh'])
 
     # the hidden units that integrates the location & the glimpses
-    glimpse_feature = tf.matmul(act_glimpse_hidden, w['wgh_gf']) + tf.matmul(act_loc_hidden, w['wlh_gf']) + b['wglh_gf']
+    glimpse_feature = tf.matmul(act_glimpse_hidden, w['wg_gh_gf'])\
+                      + tf.matmul(act_loc_hidden, w['wg_lh_gf']) + b['bg_glh_gf']
     glimpse_feature = tf.nn.relu(glimpse_feature)
 
     return glimpse_feature
 
 
 def context_network(img, w, b):
-    img_g = tf.image.resize_images(img, patch_size, patch_size)
-    img_g = tf.reshape(img_g, shape=[-1, patch_size, patch_size, 1])
+    # img_g = tf.image.resize_images(img, (patch_size, patch_size))
+    # img_g = tf.reshape(img_g, shape=[-1, patch_size, patch_size, 1])
 
-    conv1 = conv2d(img_g, w['wc1'], b['bc1'])
+    conv1 = conv2d(img, w['wc1'], b['bc1'])
     conv2 = conv2d(conv1, w['wc2'], b['bc2'])
     conv3 = conv2d(conv2, w['wc3'], b['bc3'])
 
-    fc = tf.reshape(conv3, [-1, w['wc'].get_shape().as_list()[0]])
-    fc = tf.add(tf.matmul(fc, w['wc']), b['bc'])
+    fc = tf.reshape(conv3, [-1, w['wc_fc'].get_shape().as_list()[0]])
+    fc = tf.add(tf.matmul(fc, w['wc_fc']), b['bc_fc'])
     return tf.nn.relu(fc)
 
 
@@ -109,15 +122,15 @@ def emission_network(output, w, b):
     # the next location is computed by the location network next of core-net(Level 2 RNN Cell)
     core_net_out = tf.stop_gradient(output)
 
-    baseline = tf.sigmoid(tf.matmul(output, w['wbl']) + b['bbl'])
+    baseline = tf.sigmoid(tf.matmul(output, w['we_bl']) + b['be_bl'])
 
     # compute the next location, then impose noise
     if eye_centered:
         # add the last sampled glimpse location
         # TODO max(-1, min(1, u + N(output, sigma) + prevLoc)
-        mean_loc = tf.maximum(-1.0, tf.minimum(1.0, tf.matmul(core_net_out, w['wh_nl'])))
+        mean_loc = tf.maximum(-1.0, tf.minimum(1.0, tf.matmul(core_net_out, w['we_h_nl'])))
     else:
-        mean_loc = tf.matmul(core_net_out, w['wh_nl']) + b['bh_nl']
+        mean_loc = tf.matmul(core_net_out, w['we_h_nl']) + b['be_h_nl']
         mean_loc = tf.clip_by_value(mean_loc, -1, 1)
 
     # add noise
@@ -128,34 +141,60 @@ def emission_network(output, w, b):
     return mean_loc, sample_loc, baseline
 
 
+def action_network(output, w, b, step):
+    if step < n_glimpse_per_element:
+        # 초성
+        action = tf.add(tf.matmul(output, w['wai']), b['bai'])
+    elif step < n_glimpse_per_element * 2:
+        # 중성
+        action = tf.add(tf.matmul(output, w['wam']), b['bam'])
+    else:
+        # 종성
+        action = tf.add(tf.matmul(output, w['waf']), b['baf'])
+    action = tf.nn.softmax(action)
+    return action
+
+
 def model(img, w, b):
     # initialize the location under uniform[-1, 1], for all example in the batch
-    batch_size = 1  # img.get_shape().as_list()[0]
+    # batch_size = img.get_shape().as_list()[0]
     mean_locs = []
     sampled_locs = []
     outputs = []
     baselines = []
+    actions = []
+
+    h2s = []
+    state2s = []
+    h1s = []
+    state1s = []
 
     # context feature from origin image is initial state of the top core network layer.
+    print(1, img)
     context_feature = context_network(img, w, b)
-
-    rnn1 = tf.nn.rnn_cell.LSTMCell(lstm_size)
-    rnn2 = tf.nn.rnn_cell.LSTMCell(lstm_size)
-
-    h1 = tf.zeros([None, lstm_size])
-
+    print(2, context_feature)
+    rnn1 = tf.nn.rnn_cell.LSTMCell(lstm_size, state_is_tuple=False)
+    print(3, rnn1)
+    rnn2 = tf.nn.rnn_cell.LSTMCell(lstm_size, state_is_tuple=False)
+    print(4, rnn2)
+    h1 = tf.zeros([batch_size, lstm_size])
+    print(5, h1)
     with tf.variable_scope('rnn2', reuse=False):
         h2, state2 = rnn2(h1, context_feature)
+        h2s.append(h2)
+        state2s.append(state2)
+        print(6, h2, state2)
         # initialize the location under uniform[-1, 1], for all example in the batch
         mean_loc, sampled_loc, baseline = emission_network(h2, w, b)
+        print(7, mean_loc, sampled_loc, baseline)
 
     mean_locs.append(mean_loc)
-    sampled_loc.append(sampled_loc)
+    sampled_locs.append(sampled_loc)
     baselines.append(baseline)
 
     # initialize state of 1st rnn layer as zero values
-    state1 = rnn1.zeros_state(None, tf.float32)
-
+    state1 = rnn1.zero_state(batch_size, tf.float32)
+    print(8, state1)
     '''
     이 부분에서 output을 계산하는 과정의 weight, bias의 파라미터를 초성, 중성, 종성마다 다르게 해야함
     즉, 초성의 경우 초성의 가짓수, 종성은 종성의 가짓수 등으로 해야하므로
@@ -165,18 +204,32 @@ def model(img, w, b):
     '''
     for t in range(T):
         glimpse = glimpse_network(img, w, b, sampled_loc)
+        print(9+t, 1, glimpse)
 
         with tf.variable_scope('rnn1', reuse=(t != 0)):
             h1, state1 = rnn1(glimpse, state1)
+            print(9+t, 2, h1, state1)
             output = tf.sigmoid(tf.add(tf.matmul(h1, w['wo']), b['bo']))
+            print(9+t, 3, output)
         with tf.variable_scope('rnn2', reuse=True):
             h2, state2 = rnn2(h1, state2)
+            print(9+t, 4, h2, state2)
             mean_loc, sampled_loc, baseline = emission_network(h2, w, b)
+            print(9+t, 5, mean_loc, sampled_loc, baseline)
+        h1s.append(h1)
+        h2s.append(h2)
+        state1s.append(state1)
+        state2s.append(state2)
 
+        action = action_network(output, w, b, t)
+        print(9+t, 6, action)
+        print('-'*20)
         mean_locs.append(mean_loc)
-        sampled_loc.append(sampled_loc)
+        sampled_locs.append(sampled_loc)
         baselines.append(baseline)
         outputs.append(output)
+        actions.append(action)
+
 
     '''
     outputs : output list of 1st rnn that for decide agent's action(classification)
@@ -184,10 +237,14 @@ def model(img, w, b):
     sampled_locs : random noise added location from mean_locs
     baselines : output list of 2nd rnn
     '''
-    return outputs, mean_locs, sampled_locs, baselines
+    return outputs, mean_locs, sampled_locs, baselines, actions, h1s, h2s, state1s, state2s
 
 
-def calc_reward(outputs):
+def losses(actions, mean_locs, sampled_locs, baselines, labels):
+    1
+
+
+def calc_reward(actions, mean_locs, sampled_locs, baselines, labels):
     '''
     reward를 계산할 시, 초성 중성 종성에 따라 차원의 수에 유의해야 함
     그리고 seq2seq 모델의 형태와 같이 시작과 끝을 나타내는 시그널(?)을 만드는 장치를 추가 하면 좋을듯
@@ -197,4 +254,120 @@ def calc_reward(outputs):
          즉, 중성 다음에 종성이 올지 말지에 대해서는 중성 다음에 시퀀스 종료 시그널을 통해 파악하면 될것 같다.
          유념해서 반영하자.
     '''
-    1
+    '''
+    labels : [batchsize, 3] 형태로 구성
+            batch 크기만큼에 대해서 각 초/중/종성에 해당하는 타겟의 index로 이루어짐
+    '''
+
+    '''
+    reference : https://github.com/PrincipalComponent/ram/blob/master/DRAM.py
+
+    reward
+    baseline mse : baseline과 reward를 가지고 mse 계산
+    action에 대한 cross-entropy
+    location에 대한 loglikelihood : 위 reference 의 src/utils.py 참고
+
+    loss = baseline mse + cross-entropy + loglikelihood
+    '''
+    # 각 성분별 마지막으로 glimpse한 시점에서의 출력 결과
+    #   actions : [n_glimpse_per_element * n_element_per_character, batch_size, 각 타입의 수]
+
+    # Losses/reward
+    # 일반적인 DRAM/Multiple Object Recognition 방법에서 loss fucntion을 아래와 같이 coding함.
+    # 현재는 shape, dimension이 하나도 고려가 안된 상태이니까 맞추어야 함.
+    # 그리고, 내 문제에서는 초/중/종성에 따라 나누어 디멘전이 다 다르기 때문에 고려해주어야함.
+
+    # cross-entropy
+    #   labels : [batch_size, n_element_per_character]
+
+    cross_entropies = []
+    equals = []
+    sq_errs = []
+    for i in range(n_element_per_character):
+        idx = (i+1) * n_glimpse_per_element - 1
+        logits = actions[idx]  # logits --> [batch_size, i번째 요소의 가짓 수]
+
+        # pred_label, equal : [batch_size]
+        pred_label = tf.argmax(logits, 1)
+        equal = tf.equal(pred_label, labels[:, i])
+        equals.append(equal)
+
+        # cross_entropy : [batch_size]
+        cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=labels[:, i])
+        cross_entropy = tf.reduce_mean(cross_entropy)
+        cross_entropies.append(cross_entropy)
+
+        # REINFORCE: 0/1 reward
+        reward = tf.cast(equal, tf.float32)  # reward : [batch_size]
+        rewards = tf.expand_dims(reward, 1)  # shape: [batch_size, 1]
+        rewards = tf.tile(rewards, (1, n_glimpse_per_element))  # shape: [batch_size, n_glimpse_per_element]
+
+        # log-likelihood
+        logll = loglikelihood(mean_locs[idx+1], sampled_locs[idx+1], loc_sd)
+        advs = rewards - tf.stop_gradient(baselines[idx+1])
+        logllratio = tf.reduce_mean(logll * advs)
+
+        reward = tf.reduce_mean(reward)
+        sq_errs.append(tf.square(rewards - baselines[idx+1]))
+
+    sq_errs_tensor = tf.stack(sq_errs)
+    baselines_mse = tf.reduce_mean(sq_errs_tensor)
+
+    var_list = tf.trainable_variables()
+
+    equals = tf.stack(equals)  # equals : [n_element_per_character, batch_size]
+    cross_entropies = tf.stack(cross_entropies)  # cross_entropies : [n_element_per_character, batch_size]
+
+    equals = tf.transpose(equals, [1, 0])
+    cross_entropies = tf.transpose(cross_entropies, [1, 0])
+    accuracy = tf.reduce_mean(tf.cast(equals, tf.float32))
+    # accuracy = tf.reduce_mean(equals, axis=0)
+
+    return var_list,
+
+    # REINFORCE: 0/1 reward
+
+
+
+    # xent = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=_actions, labels=labels)
+    # xent = tf.reduce_mean(xent)
+    # pred_labels = tf.argmax(_actions, 1)
+    # equal = tf.equal(pred_labels, labels)
+    # accuracy = tf.reduce_mean(tf.cast(equal, tf.float32))
+    #
+    # # REINFORCE: 0/1 reward
+    # reward = tf.cast(tf.equal(pred_labels, labels), tf.flaot32)
+    # rewards = tf.expand_dims(reward, 1) # [batch_size, 1]
+    # rewards = tf.tile(rewards, (1, n_glimpse_per_element))  # [batch_size, timesteps]
+    # logll = loglikelihood(mean_locs, sampled_locs, loc_sd)
+    # advs = rewards - tf.stop_gradient(baselines)
+    # logllratio = tf.reduce_mean(logll * advs)
+    # reward = tf.reduce_mean(reward)
+    #
+    # baselines_mse = tf.reduce_mean(tf.square((rewards - baselines)))
+    # var_list = tf.trainable_variables()
+    #
+    # # total loss
+    # total = -logllratio + xent + baselines_mse  # '-' to minimize
+    # grads = tf.gradients(total, var_list)
+    # max_grad_norm = 5.  # source code 참조
+    # grads, _ = tf.clip_by_global_norm(grads, max_grad_norm)
+
+    '''
+    학습할 때, zip(grads, var_list)를 optimizer.apply_gradients 하면됨.
+    '''
+
+
+def loglikelihood(mean_arr, sampled_arr, sigma):
+  mu        = tf.stack(mean_arr)                 # mu = [timesteps, batch_sz, loc_dim]
+  sampled   = tf.stack(sampled_arr)              # same shape as mu
+  gaussian  = tf.contrib.distributions.Normal(mu, sigma)
+  logll     = gaussian.log_pdf(sampled)         # [timesteps, batch_sz, loc_dim]
+  logll     = tf.reduce_sum(logll, 2)           # sum over time steps
+  logll     = tf.transpose(logll)               # [batch_sz, timesteps]
+
+  return logll
+
+
+
+
