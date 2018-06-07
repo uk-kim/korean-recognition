@@ -4,6 +4,7 @@ Reference
   RAM : https://github.com/jtkim-kaist/ram_modified/blob/master/ram_modified.py
 '''
 import tensorflow as tf
+import numpy as np
 
 from attention.config import *
 
@@ -164,29 +165,18 @@ def model(img, w, b):
     baselines = []
     actions = []
 
-    h2s = []
-    state2s = []
-    h1s = []
-    state1s = []
-
     # context feature from origin image is initial state of the top core network layer.
-    print(1, img)
     context_feature = context_network(img, w, b)
-    print(2, context_feature)
+
     rnn1 = tf.nn.rnn_cell.LSTMCell(lstm_size, state_is_tuple=False)
-    print(3, rnn1)
     rnn2 = tf.nn.rnn_cell.LSTMCell(lstm_size, state_is_tuple=False)
-    print(4, rnn2)
+
     h1 = tf.zeros([batch_size, lstm_size])
-    print(5, h1)
     with tf.variable_scope('rnn2', reuse=False):
         h2, state2 = rnn2(h1, context_feature)
-        h2s.append(h2)
-        state2s.append(state2)
-        print(6, h2, state2)
+
         # initialize the location under uniform[-1, 1], for all example in the batch
         mean_loc, sampled_loc, baseline = emission_network(h2, w, b)
-        print(7, mean_loc, sampled_loc, baseline)
 
     mean_locs.append(mean_loc)
     sampled_locs.append(sampled_loc)
@@ -194,36 +184,19 @@ def model(img, w, b):
 
     # initialize state of 1st rnn layer as zero values
     state1 = rnn1.zero_state(batch_size, tf.float32)
-    print(8, state1)
-    '''
-    이 부분에서 output을 계산하는 과정의 weight, bias의 파라미터를 초성, 중성, 종성마다 다르게 해야함
-    즉, 초성의 경우 초성의 가짓수, 종성은 종성의 가짓수 등으로 해야하므로
-    for 문을 T로 돌리는 것이 아니라 초성 따로, 중성 따로, 종성 따로 해서
-    각각 n_glimpse_per_element 수만큼의 포문을 3번 반복해야함
-    3번 반복하는 것을 할 때, weight를 리스트 형태로 반복해서 for 문으로 표현해도 될듯
-    '''
+
     for t in range(T):
         glimpse = glimpse_network(img, w, b, sampled_loc)
-        print(9+t, 1, glimpse)
 
         with tf.variable_scope('rnn1', reuse=(t != 0)):
             h1, state1 = rnn1(glimpse, state1)
-            print(9+t, 2, h1, state1)
             output = tf.sigmoid(tf.add(tf.matmul(h1, w['wo']), b['bo']))
-            print(9+t, 3, output)
         with tf.variable_scope('rnn2', reuse=True):
             h2, state2 = rnn2(h1, state2)
-            print(9+t, 4, h2, state2)
             mean_loc, sampled_loc, baseline = emission_network(h2, w, b)
-            print(9+t, 5, mean_loc, sampled_loc, baseline)
-        h1s.append(h1)
-        h2s.append(h2)
-        state1s.append(state1)
-        state2s.append(state2)
 
         action = action_network(output, w, b, t)
-        print(9+t, 6, action)
-        print('-'*20)
+
         mean_locs.append(mean_loc)
         sampled_locs.append(sampled_loc)
         baselines.append(baseline)
@@ -237,7 +210,7 @@ def model(img, w, b):
     sampled_locs : random noise added location from mean_locs
     baselines : output list of 2nd rnn
     '''
-    return outputs, mean_locs, sampled_locs, baselines, actions, h1s, h2s, state1s, state2s
+    return outputs, mean_locs, sampled_locs, baselines, actions
 
 
 def losses(actions, mean_locs, sampled_locs, baselines, labels):
@@ -358,11 +331,20 @@ def calc_reward(actions, mean_locs, sampled_locs, baselines, labels):
     '''
 
 
+def gaussian_pdf(mean, std, sample):
+    Z = 1.0 / (loc_sd * tf.sqrt(2.0 * np.pi))
+    a = -tf.square(sample - mean) / (2.0 * tf.square(std))
+    return Z * tf.exp(a)
+
+
 def loglikelihood(mean_arr, sampled_arr, sigma):
   mu        = tf.stack(mean_arr)                 # mu = [timesteps, batch_sz, loc_dim]
   sampled   = tf.stack(sampled_arr)              # same shape as mu
-  gaussian  = tf.contrib.distributions.Normal(mu, sigma)
-  logll     = gaussian.log_pdf(sampled)         # [timesteps, batch_sz, loc_dim]
+  logll     = gaussian_pdf(mu, sigma, sampled)
+  # gaussian  = tf.contrib.distributions.Normal(mu, sigma)
+  # print(gaussian)
+  # logll     = gaussian.log_pdf(sampled)         # [timesteps, batch_sz, loc_dim]
+  print(logll)
   logll     = tf.reduce_sum(logll, 2)           # sum over time steps
   logll     = tf.transpose(logll)               # [batch_sz, timesteps]
 
