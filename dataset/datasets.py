@@ -27,8 +27,10 @@ def load_images(base_path, paths):
         path = os.path.join(base_path, path)
         if os.path.exists(path):
             images.append(cv2.imread(path, 0))
-
-    return np.array(images)
+    images = np.array(images)
+    if len(images.shape) == 3:
+        images = np.expand_dims(images, -1)
+    return images
 
 
 class SubDataSet:
@@ -118,7 +120,7 @@ class DataSet:
     def get_image_paths(self, base_path, ext='png', sampling=False, n_sample=100):
         image_path_list = None
         label_list = None
-        for letter in tqdm(self.idx_to_label[:3]):
+        for letter in tqdm(self.idx_to_label[:]):
             _, label = utils.decompose_korean_letter(letter,
                                                      self.i2c_i,
                                                      self.i2c_m,
@@ -156,7 +158,7 @@ class DataSet:
         label_list = []
 
         base_path = os.path.join(self.main_path, ext)
-        for letter in self.idx_to_label[1:5]:
+        for letter in self.idx_to_label[:]:
             _, label = utils.decompose_korean_letter(letter,
                                                      self.i2c_i,
                                                      self.i2c_m,

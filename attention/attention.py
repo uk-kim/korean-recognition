@@ -15,6 +15,20 @@ def conv2d(x, W, b, strides=1):
     return tf.nn.relu(out)
 
 
+def weight_variable(shape, name=None):
+    initial = tf.truncated_normal(shape, stddev=0.1)
+    return tf.Variable(initial, name=name)
+
+
+def bias_variable(shape, name=None):
+    # tf.get_variable('contextNet_bias_conv1', [16], tf.float32),
+    # initial = tf.constant(0.0, shape=shape, dtype=tf.float32)
+    # return tf.Variable(initial, name=name)
+    # return tf.get_variable(name, shape=shape, dtype=tf.float32)
+    initial = tf.truncated_normal(shape, stddev=0.1)
+    return tf.Variable(initial, name=name)
+
+
 def glimpse_sensor(img, norm_loc):
     # norm_loc coordinates are between -1 and 1
     loc = tf.round(((norm_loc + 1) / 2.0) * img_sz)
@@ -204,131 +218,80 @@ def model(img, w, b):
         actions.append(action)
 
 
+    elements_action = actions[n_glimpse_per_element-1::n_glimpse_per_element]
+    predicted_labels = tf.stack([tf.argmax(act, -1) for act in elements_action])
     '''
     outputs : output list of 1st rnn that for decide agent's action(classification)
     mean_locs : predicted next location
     sampled_locs : random noise added location from mean_locs
     baselines : output list of 2nd rnn
     '''
-    return outputs, mean_locs, sampled_locs, baselines, actions
+    return outputs, mean_locs, sampled_locs, baselines, actions, predicted_labels
 
 
 def losses(actions, mean_locs, sampled_locs, baselines, labels):
-    1
-
-
-def calc_reward(actions, mean_locs, sampled_locs, baselines, labels):
-    '''
-    reward를 계산할 시, 초성 중성 종성에 따라 차원의 수에 유의해야 함
-    그리고 seq2seq 모델의 형태와 같이 시작과 끝을 나타내는 시그널(?)을 만드는 장치를 추가 하면 좋을듯
-     --> 가: ㄱ + ㅏ  (초성 + 중성)
-         감: ㄱ + ㅏ + ㅁ (초성 + 중성 + 종성)
-
-         즉, 중성 다음에 종성이 올지 말지에 대해서는 중성 다음에 시퀀스 종료 시그널을 통해 파악하면 될것 같다.
-         유념해서 반영하자.
-    '''
-    '''
-    labels : [batchsize, 3] 형태로 구성
-            batch 크기만큼에 대해서 각 초/중/종성에 해당하는 타겟의 index로 이루어짐
-    '''
-
-    '''
-    reference : https://github.com/PrincipalComponent/ram/blob/master/DRAM.py
-
-    reward
-    baseline mse : baseline과 reward를 가지고 mse 계산
-    action에 대한 cross-entropy
-    location에 대한 loglikelihood : 위 reference 의 src/utils.py 참고
-
-    loss = baseline mse + cross-entropy + loglikelihood
-    '''
-    # 각 성분별 마지막으로 glimpse한 시점에서의 출력 결과
-    #   actions : [n_glimpse_per_element * n_element_per_character, batch_size, 각 타입의 수]
-
-    # Losses/reward
-    # 일반적인 DRAM/Multiple Object Recognition 방법에서 loss fucntion을 아래와 같이 coding함.
-    # 현재는 shape, dimension이 하나도 고려가 안된 상태이니까 맞추어야 함.
-    # 그리고, 내 문제에서는 초/중/종성에 따라 나누어 디멘전이 다 다르기 때문에 고려해주어야함.
-
-    # cross-entropy
-    #   labels : [batch_size, n_element_per_character]
-
     cross_entropies = []
-    equals = []
     sq_errs = []
-    for i in range(n_element_per_character):
-        idx = (i+1) * n_glimpse_per_element - 1
-        logits = actions[idx]  # logits --> [batch_size, i번째 요소의 가짓 수]
+    logllratios = []
+    equals = []
 
-        # pred_label, equal : [batch_size]
+    for i in range(n_element_per_character):
+        idx = (i + 1) * n_glimpse_per_element
+        logits = actions[idx - 1]
+
         pred_label = tf.argmax(logits, 1)
         equal = tf.equal(pred_label, labels[:, i])
+
+        # cross-entropy
+        cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=labels[:, i])
+
+        # reward : 0/1
+        reward = tf.cast(equal, tf.float32)
+        rewards = tf.expand_dims(reward, 1)
+        rewards = tf.tile(rewards, (1, n_glimpse_per_element))
+
+        b = baselines[idx - n_glimpse_per_element:idx]
+        b = tf.stack(b, 1)
+        b = tf.reshape(b, [batch_size, n_glimpse_per_element])
+
+        # select locations at last time of each character elements
+        m_locs = mean_locs[idx - n_glimpse_per_element: idx]
+        s_locs = sampled_locs[idx - n_glimpse_per_element: idx]
+
+        # log likelihood
+        logll = loglikelihood(m_locs, s_locs, loc_sd)
+        advs = rewards - tf.stop_gradient(b)
+        logllratio = tf.reduce_mean(logll * advs)
+        sq_err = tf.square(rewards - b)
+
+        # appending to list
+        cross_entropies.append(cross_entropy)
+        sq_errs.append(sq_err)
+        logllratios.append(logllratio)
         equals.append(equal)
 
-        # cross_entropy : [batch_size]
-        cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=labels[:, i])
-        cross_entropy = tf.reduce_mean(cross_entropy)
-        cross_entropies.append(cross_entropy)
+    sq_errs = tf.stack(sq_errs)
+    cross_entropies = tf.stack(cross_entropies)
+    logllratios = tf.stack(logllratios)
 
-        # REINFORCE: 0/1 reward
-        reward = tf.cast(equal, tf.float32)  # reward : [batch_size]
-        rewards = tf.expand_dims(reward, 1)  # shape: [batch_size, 1]
-        rewards = tf.tile(rewards, (1, n_glimpse_per_element))  # shape: [batch_size, n_glimpse_per_element]
-
-        # log-likelihood
-        logll = loglikelihood(mean_locs[idx+1], sampled_locs[idx+1], loc_sd)
-        advs = rewards - tf.stop_gradient(baselines[idx+1])
-        logllratio = tf.reduce_mean(logll * advs)
-
-        reward = tf.reduce_mean(reward)
-        sq_errs.append(tf.square(rewards - baselines[idx+1]))
-
-    sq_errs_tensor = tf.stack(sq_errs)
-    baselines_mse = tf.reduce_mean(sq_errs_tensor)
+    baseline_mse = tf.reduce_mean(sq_errs)
+    cross_entropies = tf.reduce_mean(cross_entropies) * 0.1
+    logllratios = tf.reduce_mean(logllratios)
 
     var_list = tf.trainable_variables()
+    total_loss = -logllratios + cross_entropies + baseline_mse  # '-' to minimize
+    grads = tf.gradients(total_loss, var_list)
+    max_grad_norm = 5.
+    grads, _ = tf.clip_by_global_norm(grads, max_grad_norm)
 
-    equals = tf.stack(equals)  # equals : [n_element_per_character, batch_size]
-    cross_entropies = tf.stack(cross_entropies)  # cross_entropies : [n_element_per_character, batch_size]
-
-    equals = tf.transpose(equals, [1, 0])
-    cross_entropies = tf.transpose(cross_entropies, [1, 0])
-    accuracy = tf.reduce_mean(tf.cast(equals, tf.float32))
-    # accuracy = tf.reduce_mean(equals, axis=0)
-
-    return var_list,
-
-    # REINFORCE: 0/1 reward
-
-
-
-    # xent = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=_actions, labels=labels)
-    # xent = tf.reduce_mean(xent)
-    # pred_labels = tf.argmax(_actions, 1)
-    # equal = tf.equal(pred_labels, labels)
-    # accuracy = tf.reduce_mean(tf.cast(equal, tf.float32))
-    #
-    # # REINFORCE: 0/1 reward
-    # reward = tf.cast(tf.equal(pred_labels, labels), tf.flaot32)
-    # rewards = tf.expand_dims(reward, 1) # [batch_size, 1]
-    # rewards = tf.tile(rewards, (1, n_glimpse_per_element))  # [batch_size, timesteps]
-    # logll = loglikelihood(mean_locs, sampled_locs, loc_sd)
-    # advs = rewards - tf.stop_gradient(baselines)
-    # logllratio = tf.reduce_mean(logll * advs)
-    # reward = tf.reduce_mean(reward)
-    #
-    # baselines_mse = tf.reduce_mean(tf.square((rewards - baselines)))
-    # var_list = tf.trainable_variables()
-    #
-    # # total loss
-    # total = -logllratio + xent + baselines_mse  # '-' to minimize
-    # grads = tf.gradients(total, var_list)
-    # max_grad_norm = 5.  # source code 참조
-    # grads, _ = tf.clip_by_global_norm(grads, max_grad_norm)
+    acc_i = tf.cast(equals[0], tf.float32)
+    acc_m = tf.cast(equals[1], tf.float32)
+    acc_f = tf.cast(equals[2], tf.float32)
 
     '''
     학습할 때, zip(grads, var_list)를 optimizer.apply_gradients 하면됨.
     '''
+    return logllratios, cross_entropies, baseline_mse, total_loss, grads, var_list, acc_i, acc_m, acc_f
 
 
 def gaussian_pdf(mean, std, sample):
@@ -341,10 +304,6 @@ def loglikelihood(mean_arr, sampled_arr, sigma):
   mu        = tf.stack(mean_arr)                 # mu = [timesteps, batch_sz, loc_dim]
   sampled   = tf.stack(sampled_arr)              # same shape as mu
   logll     = gaussian_pdf(mu, sigma, sampled)
-  # gaussian  = tf.contrib.distributions.Normal(mu, sigma)
-  # print(gaussian)
-  # logll     = gaussian.log_pdf(sampled)         # [timesteps, batch_sz, loc_dim]
-  print(logll)
   logll     = tf.reduce_sum(logll, 2)           # sum over time steps
   logll     = tf.transpose(logll)               # [batch_sz, timesteps]
 
