@@ -34,7 +34,8 @@ def load_images(base_path, paths):
 
 
 class SubDataSet:
-    def __init__(self, path_list, label_list, main_path):
+    def __init__(self, dataset, path_list, label_list, main_path):
+        self.dataset = dataset
         self.path_list = path_list
         self.label_list = label_list
         self.main_path = main_path
@@ -56,6 +57,7 @@ class SubDataSet:
         e_idx = self._cur_idx + batch_size
 
         paths = self.path_list[self._cur_idx:e_idx]
+
         batch_images = load_images(self.main_path, paths)
         batch_labels = self.label_list[self._cur_idx:e_idx]
 
@@ -114,8 +116,8 @@ class DataSet:
         np.random.shuffle(idxs)
 
         base_path = os.path.join(self.main_path, 'png')
-        self.train_data = SubDataSet(path_list[idxs[:n_train_data]], label_list[idxs[:n_train_data]], base_path)
-        self.test_data = SubDataSet(path_list[idxs[n_train_data:]], label_list[idxs[n_train_data:]], base_path)
+        self.train_data = SubDataSet(self.dataset, path_list[idxs[:n_train_data]], label_list[idxs[:n_train_data]], base_path)
+        self.test_data = SubDataSet(self.dataset, path_list[idxs[n_train_data:]], label_list[idxs[n_train_data:]], base_path)
 
     def get_image_paths(self, base_path, ext='png', sampling=False, n_sample=100):
         image_path_list = None
@@ -168,7 +170,10 @@ class DataSet:
                                                      self.c2i_f)
 
             path = os.path.join(base_path, letter)
-            images = self.dataset.load_images(path, ext, False, False)
+            if ext in ['npy', 'np']:
+                images = self.dataset.load_np_images(path, ext, False, False)
+            else:
+                images = self.dataset.load_images(path, ext, False, False)
 
             image_list += images
             label_list += label * len(images)

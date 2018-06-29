@@ -16,17 +16,18 @@ def conv2d(x, W, b, strides=1):
 
 
 def weight_variable(shape, name=None):
-    initial = tf.truncated_normal(shape, stddev=0.1)
-    return tf.Variable(initial, name=name)
+    # initial = tf.truncated_normal(shape, stddev=0.1)
+    # return tf.Variable(initial, name=name, dtype=tf.float32)
+    return tf.get_variable(name=name, shape=shape, dtype=tf.float32)
 
 
 def bias_variable(shape, name=None):
     # tf.get_variable('contextNet_bias_conv1', [16], tf.float32),
     # initial = tf.constant(0.0, shape=shape, dtype=tf.float32)
     # return tf.Variable(initial, name=name)
-    # return tf.get_variable(name, shape=shape, dtype=tf.float32)
-    initial = tf.truncated_normal(shape, stddev=0.1)
-    return tf.Variable(initial, name=name)
+    return tf.get_variable(name, shape=shape, dtype=tf.float32)
+    # initial = tf.truncated_normal(shape, stddev=0.1)
+    # return tf.Variable(initial, name=name)
 
 
 def glimpse_sensor(img, norm_loc):
@@ -82,23 +83,27 @@ def glimpse_sensor(img, norm_loc):
 def get_glimpse_feature(glimpse, w, b):
     # glimpse : [batch_size, g_depth, height, width]
     #   to conv glimpse, reshape glimpse as [batch_size * g_depth, height, width, 1]
-    #    first, rehape as [batch_size * g_depth, height, width]
+    #    first, rehape as [batch_size * g_depth, height, width]  (x)
+    #           transpose as [batch_size, height, width, g_depth] (o)
     #    second, expand dims as [batch_size*g_depth, height, width, 1]
-    rsp_glimspe = tf.reshape(glimpse, [-1, sensor_bandwidth, sensor_bandwidth])
-    ep_glimpse = tf.expand_dims(rsp_glimspe, -1)
+    # rsp_glimspe = tf.reshape(glimpse, [-1, sensor_bandwidth, sensor_bandwidth])
+    # ep_glimpse = tf.expand_dims(rsp_glimspe, -1)
+    glimpse = tf.transpose(glimpse, [0, 2, 3, 1])
 
-    conv1 = conv2d(ep_glimpse, w['wg1'], b['bg1'])
+    # conv1 = conv2d(ep_glimpse, w['wg1'], b['bg1'])
+    conv1 = conv2d(glimpse, w['wg1'], b['bg1'])
     conv2 = conv2d(conv1, w['wg2'], b['bg2'])
-    conv3 = conv2d(conv2, w['wg3'], b['bg3'])
+    #conv3 = conv2d(conv2, w['wg3'], b['bg3'])
 
     # conv3 : [batch_size * g_depth, height, width, 3]
     #   conv3 --> fc_in : [batch_size, g_depth, height, width, 3]
     #                -->  reduce_sum  [batch_size, height, width, 3]
-    last_ch_size = conv3.get_shape().as_list()[-1]
+    last_ch_size = conv2.get_shape().as_list()[-1]
 
-    fc_in = tf.reshape(conv3, [-1, g_depth, sensor_bandwidth, sensor_bandwidth, last_ch_size])
-    fc_in = tf.reduce_sum(fc_in, 1)
-    fc_in = tf.reshape(fc_in, [-1, sensor_bandwidth * sensor_bandwidth * last_ch_size])
+    # fc_in = tf.reshape(conv2, [-1, g_depth, sensor_bandwidth, sensor_bandwidth, last_ch_size])
+    # fc_in = tf.reduce_sum(fc_in, 1)
+    # fc_in = tf.reshape(fc_in, [-1, sensor_bandwidth * sensor_bandwidth * last_ch_size])
+    fc_in = tf.reshape(conv2, [-1, sensor_bandwidth * sensor_bandwidth * last_ch_size])
 
     feature = tf.nn.relu(tf.matmul(fc_in, w['wg_fc']) + b['bg_fc'])
     return feature
@@ -126,9 +131,10 @@ def context_network(img, w, b):
 
     conv1 = conv2d(img, w['wc1'], b['bc1'])
     conv2 = conv2d(conv1, w['wc2'], b['bc2'])
-    conv3 = conv2d(conv2, w['wc3'], b['bc3'])
+    pool1 = tf.nn.max_pool(conv2, [1, 3, 3, 1], [1, 2, 2, 1], 'SAME')
+    #conv3 = conv2d(conv2, w['wc3'], b['bc3'])
 
-    fc = tf.reshape(conv3, [-1, w['wc_fc'].get_shape().as_list()[0]])
+    fc = tf.reshape(pool1, [-1, w['wc_fc'].get_shape().as_list()[0]])
     fc = tf.add(tf.matmul(fc, w['wc_fc']), b['bc_fc'])
     return tf.nn.relu(fc)
 
@@ -159,18 +165,18 @@ def emission_network(output, w, b):
 def action_network(output, w, b, step):
     if step < n_glimpse_per_element:
         # 초성
-        action = tf.add(tf.matmul(output, w['wai']), b['bai'])
+        logits = tf.add(tf.matmul(output, w['wai']), b['bai'])
     elif step < n_glimpse_per_element * 2:
         # 중성
-        action = tf.add(tf.matmul(output, w['wam']), b['bam'])
+        logits = tf.add(tf.matmul(output, w['wam']), b['bam'])
     else:
         # 종성
-        action = tf.add(tf.matmul(output, w['waf']), b['baf'])
-    action = tf.nn.softmax(action)
-    return action
+        logits = tf.add(tf.matmul(output, w['waf']), b['baf'])
+    action = tf.nn.softmax(logits)
+    return logits, action
 
 
-def model(img, w, b):
+def model(x, w, b):
     # initialize the location under uniform[-1, 1], for all example in the batch
     # batch_size = img.get_shape().as_list()[0]
     mean_locs = []
@@ -178,9 +184,15 @@ def model(img, w, b):
     outputs = []
     baselines = []
     actions = []
+    action_logits = []
+
+    img = x / 255.0
 
     # context feature from origin image is initial state of the top core network layer.
     context_feature = context_network(img, w, b)
+
+
+    # RNN을 각 원소마다 각각 만들어보자. 초성, 중성, 종성마다
 
     rnn1 = tf.nn.rnn_cell.LSTMCell(lstm_size, state_is_tuple=False)
     rnn2 = tf.nn.rnn_cell.LSTMCell(lstm_size, state_is_tuple=False)
@@ -209,13 +221,14 @@ def model(img, w, b):
             h2, state2 = rnn2(h1, state2)
             mean_loc, sampled_loc, baseline = emission_network(h2, w, b)
 
-        action = action_network(output, w, b, t)
+        logit, action = action_network(output, w, b, t)
 
         mean_locs.append(mean_loc)
         sampled_locs.append(sampled_loc)
         baselines.append(baseline)
         outputs.append(output)
         actions.append(action)
+        action_logits.append(logit)
 
 
     elements_action = actions[n_glimpse_per_element-1::n_glimpse_per_element]
@@ -226,10 +239,79 @@ def model(img, w, b):
     sampled_locs : random noise added location from mean_locs
     baselines : output list of 2nd rnn
     '''
-    return outputs, mean_locs, sampled_locs, baselines, actions, predicted_labels
+    return outputs, mean_locs, sampled_locs, baselines, actions, action_logits, predicted_labels
 
 
-def losses(actions, mean_locs, sampled_locs, baselines, labels):
+def model2(x, w, b):
+    # initialize the location under uniform[-1, 1], for all example in the batch
+    # batch_size = img.get_shape().as_list()[0]
+    mean_locs = []
+    sampled_locs = []
+    outputs = []
+    baselines = []
+    actions = []
+    action_logits = []
+
+    img = x / 255.0
+
+    # context feature from origin image is initial state of the top core network layer.
+    context_feature = context_network(img, w, b)
+
+
+    # RNN을 각 원소마다 각각 만들어보자. 초성, 중성, 종성마다
+
+    rnn1 = [tf.nn.rnn_cell.LSTMCell(lstm_size, state_is_tuple=False)]*n_element_per_character
+    rnn2 = [tf.nn.rnn_cell.LSTMCell(lstm_size, state_is_tuple=False)]*n_element_per_character
+
+    h1 = tf.zeros([batch_size, lstm_size])
+    with tf.variable_scope('rnn2', reuse=False):
+        h2, state2 = rnn2[0](h1, context_feature)
+
+        # initialize the location under uniform[-1, 1], for all example in the batch
+        mean_loc, sampled_loc, baseline = emission_network(h2, w, b)
+
+    mean_locs.append(mean_loc)
+    sampled_locs.append(sampled_loc)
+    baselines.append(baseline)
+
+    # initialize state of 1st rnn layer as zero values
+    state1 = rnn1[0].zero_state(batch_size, tf.float32)
+
+    for e in range(n_element_per_character):
+        for g in range(n_glimpse_per_element):
+            t = g + e * n_glimpse_per_element
+
+            glimpse = glimpse_network(img, w, b, sampled_loc)
+
+            with tf.variable_scope('rnn1_%d' % (e+1), reuse=(True if g else False)):
+                h1, state1 = rnn1[e](glimpse, state1)
+                output = tf.nn.relu(tf.add(tf.matmul(h1, w['wo']), b['bo']))
+                # output = tf.sigmoid(tf.add(tf.matmul(h1, w['wo']), b['bo']))
+            with tf.variable_scope('rnn2_%d' % (e+1), reuse=(False if (e > 0 and g == 0) else True)):
+                h2, state2 = rnn2[e](h1, state2)
+                mean_loc, sampled_loc, baseline = emission_network(h2, w, b)
+
+            logit, action = action_network(output, w, b, t)
+
+            mean_locs.append(mean_loc)
+            sampled_locs.append(sampled_loc)
+            baselines.append(baseline)
+            outputs.append(output)
+            actions.append(action)
+            action_logits.append(logit)
+
+    elements_action = actions[n_glimpse_per_element-1::n_glimpse_per_element]
+    predicted_labels = tf.stack([tf.argmax(act, -1) for act in elements_action])
+    '''
+    outputs : output list of 1st rnn that for decide agent's action(classification)
+    mean_locs : predicted next location
+    sampled_locs : random noise added location from mean_locs
+    baselines : output list of 2nd rnn
+    '''
+    return outputs, mean_locs, sampled_locs, baselines, actions, action_logits, predicted_labels
+
+
+def losses(actions, action_logits, mean_locs, sampled_locs, baselines, labels):
     cross_entropies = []
     sq_errs = []
     logllratios = []
@@ -237,19 +319,18 @@ def losses(actions, mean_locs, sampled_locs, baselines, labels):
 
     for i in range(n_element_per_character):
         idx = (i + 1) * n_glimpse_per_element
-        logits = actions[idx - 1]
-
-        pred_label = tf.argmax(logits, 1)
+        action = actions[idx - 1]
+        logit = action_logits[idx - 1]
+        pred_label = tf.argmax(action, 1)
         equal = tf.equal(pred_label, labels[:, i])
 
         # cross-entropy
-        cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logits, labels=labels[:, i])
+        cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logit, labels=labels[:, i])
 
         # reward : 0/1
         reward = tf.cast(equal, tf.float32)
         rewards = tf.expand_dims(reward, 1)
         rewards = tf.tile(rewards, (1, n_glimpse_per_element))
-
         b = baselines[idx - n_glimpse_per_element:idx]
         b = tf.stack(b, 1)
         b = tf.reshape(b, [batch_size, n_glimpse_per_element])
@@ -270,16 +351,16 @@ def losses(actions, mean_locs, sampled_locs, baselines, labels):
         logllratios.append(logllratio)
         equals.append(equal)
 
-    sq_errs = tf.stack(sq_errs)
     cross_entropies = tf.stack(cross_entropies)
     logllratios = tf.stack(logllratios)
+    sq_errs = tf.stack(sq_errs)
 
     baseline_mse = tf.reduce_mean(sq_errs)
-    cross_entropies = tf.reduce_mean(cross_entropies) * 0.1
+    cross_entropies = tf.reduce_mean(cross_entropies)
     logllratios = tf.reduce_mean(logllratios)
 
     var_list = tf.trainable_variables()
-    total_loss = -logllratios + cross_entropies + baseline_mse  # '-' to minimize
+    total_loss = -logllratios + cross_entropies * 0.1 + baseline_mse  # '-' to minimize
     grads = tf.gradients(total_loss, var_list)
     max_grad_norm = 5.
     grads, _ = tf.clip_by_global_norm(grads, max_grad_norm)
@@ -291,7 +372,133 @@ def losses(actions, mean_locs, sampled_locs, baselines, labels):
     '''
     학습할 때, zip(grads, var_list)를 optimizer.apply_gradients 하면됨.
     '''
-    return logllratios, cross_entropies, baseline_mse, total_loss, grads, var_list, acc_i, acc_m, acc_f
+    return logllratios, cross_entropies, baseline_mse, total_loss, grads, var_list, (acc_i, acc_m, acc_f)
+
+
+def losses2(actions, action_logits, mean_locs, sampled_locs, baselines, labels):
+    cross_entropies = []
+    sq_errs = []
+    logllratios = []
+    equals = []
+
+    for i in range(n_element_per_character):
+        idx = (i + 1) * n_glimpse_per_element
+        action = actions[idx - 1]
+        logit = action_logits[idx - 1]
+        pred_label = tf.argmax(action, 1)
+        equal = tf.equal(pred_label, labels[:, i])
+
+        # cross-entropy
+        cross_entropy = tf.nn.sparse_softmax_cross_entropy_with_logits(logits=logit, labels=labels[:, i])
+
+        # reward : 0/1
+        reward = tf.cast(equal, tf.float32)
+        rewards = tf.expand_dims(reward, 1)
+        rewards = tf.tile(rewards, (1, n_glimpse_per_element))
+
+        b = baselines[idx - n_glimpse_per_element + 1]
+
+        # select locations at last time of each character elements
+        m_locs = mean_locs[idx - n_glimpse_per_element: idx]
+        s_locs = sampled_locs[idx - n_glimpse_per_element: idx]
+
+        # log likelihood
+        logll = loglikelihood(m_locs, s_locs, loc_sd)
+        advs = rewards - tf.stop_gradient(b)
+        logllratio = tf.reduce_mean(logll * advs)
+        sq_err = tf.square(rewards - b)
+
+        # appending to list
+        cross_entropies.append(cross_entropy)
+        sq_errs.append(sq_err)
+        logllratios.append(logllratio)
+        equals.append(equal)
+
+    cross_entropies = tf.stack(cross_entropies)
+    logllratios = tf.stack(logllratios)
+    sq_errs = tf.stack(sq_errs)
+
+    baseline_mse = tf.reduce_mean(sq_errs)
+    cross_entropies = tf.reduce_mean(cross_entropies)
+    logllratios = tf.reduce_mean(logllratios)
+
+    var_list = tf.trainable_variables()
+    total_loss = -logllratios + cross_entropies * 0.1 + baseline_mse  # '-' to minimize
+    grads = tf.gradients(total_loss, var_list)
+    max_grad_norm = 5.
+    grads, _ = tf.clip_by_global_norm(grads, max_grad_norm)
+
+    accs = [tf.cast(eq, tf.float32) for eq in equals]
+
+    '''
+    학습할 때, zip(grads, var_list)를 optimizer.apply_gradients 하면됨.
+    '''
+    return logllratios, cross_entropies, baseline_mse, total_loss, grads, var_list, accs
+
+
+def pretrain_losses(x, w, b):
+    c_fc_size = w['wc_fc'].get_shape().as_list()[-1]
+    g_fc_size = w['wg_fc'].get_shape().as_list()[-1]
+
+    image_size = img_len * channels
+
+    # context net
+    x_normalized = x / 255.0
+    c_conv1 = conv2d(x_normalized, w['wc1'], b['bc1'])
+    c_conv2 = conv2d(c_conv1, w['wc2'], b['bc2'])
+    #c_conv3 = conv2d(c_conv2, w['wc3'], b['bc3'])
+
+    c_fc = tf.reshape(c_conv2, [-1, w['wc_fc'].get_shape().as_list()[0]])
+    # c_fc = tf.add(tf.matmul(c_fc, w['wc_fc']), b['bc_fc'])
+    # c_fc = tf.nn.relu(c_fc)
+
+    # glimpse net
+    glimpse = []
+    for k in range(batch_size):
+        img = x[k, :, :, :]
+
+        img = tf.reshape(img, (1, img.get_shape()[0].value, img.get_shape()[1].value, channels))
+
+        # resize image to (sensorBandwidth x sensorBandwidth)
+        img = tf.image.resize_bilinear(img, (sensor_bandwidth, sensor_bandwidth))
+        img = tf.reshape(img, (sensor_bandwidth, sensor_bandwidth))
+        glimpse.append(img)
+
+    glimpse = tf.stack(glimpse)
+    glimpse = tf.expand_dims(glimpse, -1)
+
+    g_conv1 = conv2d(glimpse, w['wg1'], b['bg1'])
+    g_conv2 = conv2d(g_conv1, w['wg2'], b['bg2'])
+    #g_conv3 = conv2d(g_conv2, w['wg3'], b['bg3'])
+
+    g_fc = tf.reshape(g_conv2, [batch_size, sensor_bandwidth * sensor_bandwidth * g_conv2.get_shape().as_list()[-1]])
+
+    #g_fc = tf.nn.relu(tf.matmul(g_fc, w['wg_fc']) + b['bg_fc'])
+
+    # Reconstruction
+    w_c = weight_variable([w['wc_fc'].get_shape().as_list()[0], image_size], 'context_net_pretrain_weight')
+    w_g = weight_variable([sensor_bandwidth * sensor_bandwidth * g_conv2.get_shape().as_list()[-1], image_size],
+                          'glimpse_net_pretrain_weight')
+    b_c = bias_variable([image_size], 'context_net_pretrain_bias')
+    b_g = bias_variable([image_size], 'glimpse_net_pretrain_bias')
+
+    c_reconstruction = tf.nn.sigmoid(tf.add(tf.matmul(c_fc, w_c), b_c))
+    g_reconstruction = tf.nn.sigmoid(tf.add(tf.matmul(g_fc, w_g), b_g))
+
+    # print('image_size:', image_size, 'x_normalized:', x_normalized, 'x:', x)
+    x_rsp = tf.reshape(x_normalized, [-1, image_size])
+
+    # Reconstruction Cost
+    c_reconstruction_cost = tf.reduce_mean(tf.square(x_rsp - c_reconstruction))
+    g_reconstruction_cost = tf.reduce_mean(tf.square(x_rsp - g_reconstruction))
+
+    total_reconstruction_cost = tf.add(c_reconstruction_cost, g_reconstruction_cost)
+
+    # Optimizer
+    train_op_r = tf.train.AdamOptimizer(1e-3).minimize(total_reconstruction_cost)
+    # train_op_r = tf.train.RMSPropOptimizer(1e-3).minimize(total_reconstruction_cost)
+
+    return c_reconstruction, c_reconstruction_cost, g_reconstruction, g_reconstruction_cost, total_reconstruction_cost, train_op_r
 
 
 def gaussian_pdf(mean, std, sample):

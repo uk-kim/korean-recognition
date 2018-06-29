@@ -1,3 +1,13 @@
+'''
+확인해볼 사항
+ - RNN을 초성/중성/종성 각각에 대해서 만들어서 학습
+ - pretraining을 수행할 때, 단계별로 학습을 수행하는 것
+    1) 초성에 대한 네트워크를 학습
+    2) 중성에 대한 네트워크로 Transfer learning
+    3) 잘 되겠지...
+
+'''
+
 import tensorflow as tf
 import numpy as np
 import cv2
@@ -7,7 +17,7 @@ import time
 import os
 
 from dataset.datasets import DataSet
-from attention.attention import model, losses, weight_variable, bias_variable
+from attention.attention import model, model2, losses2, weight_variable, bias_variable, pretrain_losses
 from attention.config import *
 
 
@@ -23,13 +33,13 @@ def to_image_coordinates(normalized_coordinate):
 def variable_summaries(var, name):
     """Attach a lot of summaries to a Tensor."""
     with tf.name_scope('param_summaries'):
-        mean = tf.reduce_mean(var)
-        tf.summary.scalar('param_mean/' + name, mean)
-        with tf.name_scope('param_stddev'):
-            stddev = tf.sqrt(tf.reduce_sum(tf.square(var - mean)))
-        tf.summary.scalar('param_sttdev/' + name, stddev)
-        tf.summary.scalar('param_max/' + name, tf.reduce_max(var))
-        tf.summary.scalar('param_min/' + name, tf.reduce_min(var))
+        # mean = tf.reduce_mean(var)
+        # tf.summary.scalar('param_mean/' + name, mean)
+        # with tf.name_scope('param_stddev'):
+        #     stddev = tf.sqrt(tf.reduce_sum(tf.square(var - mean)))
+        # tf.summary.scalar('param_sttdev/' + name, stddev)
+        # tf.summary.scalar('param_max/' + name, tf.reduce_max(var))
+        # tf.summary.scalar('param_min/' + name, tf.reduce_min(var))
         tf.summary.histogram(name, var)
 
 
@@ -55,10 +65,7 @@ def evaluate(datasets, sess, tensors):
     '''
     data = datasets.test_data
 
-    _acc_t = 0
-    _acc_i = 0
-    _acc_m = 0
-    _acc_f = 0
+    _acc_element = [0] * (len(tensors) - 2)
 
     n_iter = min(10, data.n_data // batch_size)
 
@@ -66,19 +73,48 @@ def evaluate(datasets, sess, tensors):
         images, labels = data.next_batch(batch_size)
         if images.shape[0] != batch_size:
             images, labels = dataset.train_data.next_batch(batch_size)
-        t, i, m, f = sess.run(tensors[2:], feed_dict={tensors[0]: images, tensors[1]: labels})
-        _acc_t += t
-        _acc_i += i
-        _acc_m += m
-        _acc_f += f
+        accs = sess.run(tensors[2:], feed_dict={tensors[0]: images, tensors[1]: labels})
+        for i in range(_acc_element):
+            _acc_element[i] += accs[i]
 
-    _acc_t /= n_iter
-    _acc_i /= n_iter
-    _acc_m /= n_iter
-    _acc_f /= n_iter
+    for i in range(len(_acc_element)):
+        _acc_element[i] /= n_iter
 
-    print(" >> TOTAL ACCURACY: %.3f, INITIAL ACCURACY: %.3f, MIDDLE ACCURACY: %.3f, FINAL ACCURACY: %.3f" %
-          (_acc_t, _acc_i, _acc_m, _acc_f))
+    acc_str = " >> TOTAL ACCURACY: %.3f" % _acc_element[0]
+    for i in range(len(_acc_element) - 1):
+        acc_str += ", %d th ACCURACY: %.3f" % _acc_element[i+1]
+
+    print(acc_str)
+    # print(" >> TOTAL ACCURACY: %.3f, INITIAL ACCURACY: %.3f, MIDDLE ACCURACY: %.3f, FINAL ACCURACY: %.3f" %
+    #       (_acc_t, _acc_i, _acc_m, _acc_f))
+
+
+def pretrain(c_recon, c_recon_cost, g_recon, g_recon_cost, total_recon_cost, train_op_r, step):
+    print(' Reconstruction Building.. (for pretraining)')
+
+    print(' Pre-Training Start..!')
+    start_time = time.time()
+    for step in range(step):
+        next_images, _ = dataset.train_data.next_batch(batch_size)
+        if next_images.shape[0] != batch_size:
+            next_images, _ = dataset.train_data.next_batch(batch_size)
+
+        feed_dict = {x: next_images}
+
+        fetches = [c_recon, c_recon_cost, g_recon, g_recon_cost, total_recon_cost, train_op_r]
+
+        c_r, c_r_cost, g_r, g_r_cost, t_cost, op_r = sess.run(fetches, feed_dict=feed_dict)
+
+
+        if step % 100 == 0:
+            end_time = time.time()
+            duration = end_time - start_time
+            start_time = end_time
+            print(
+                'Step %d --> Reconstruction Pretraining: total_cost = %.5f, context_cost = %.3f, glimpse_cost = %.3f (%.3f sec)' % (
+                step, t_cost, c_r_cost, g_r_cost, duration))
+
+    print(' Pretraining Finish..!\n')
 
 
 if __name__ == '__main__':
@@ -93,7 +129,7 @@ if __name__ == '__main__':
     }
     args['data_size'] = args['width'] * args['height']
 
-    base_path = os.path.join(os.path.curdir, '20180613_training')
+    base_path = os.path.join(os.path.curdir, '20180629')
     summary_path = os.path.join(base_path, 'summary')
     save_path = os.path.join(base_path, 'save')
     image_log_path = os.path.join(base_path, 'image_log')
@@ -116,10 +152,10 @@ if __name__ == '__main__':
     # Weight and Bias variables
     w = {
         # for context network
-        'wc1': weight_variable([3, 3, channels, 16], 'contextNet_weight_conv1'),
-        'wc2': weight_variable([3, 3, 16, 64], 'contextNet_weight_conv2'),
-        'wc3': weight_variable([3, 3, 64, 3], 'contextNet_weight_conv3'),
-        'wc_fc': weight_variable([img_len * 3, lstm_size * 2], 'contextNet_weight_fc'),
+        'wc1': weight_variable([3, 3, channels, 8], 'contextNet_weight_conv1'),
+        'wc2': weight_variable([3, 3, 8, 3], 'contextNet_weight_conv2'),
+        # 'wc3': weight_variable([3, 3, 64, 3], 'contextNet_weight_conv3'),
+        'wc_fc': weight_variable([img_len // 4 * 3, lstm_size * 2], 'contextNet_weight_fc'),
 
         # 'wc1': tf.get_variable('contextNet_weight_conv1', [3, 3, channels, 16], tf.float32),
         # 'wc2': tf.get_variable('contextNet_weight_conv2', [3, 3, 16, 64], tf.float32),
@@ -138,9 +174,10 @@ if __name__ == '__main__':
         # 'wam': tf.get_variable('actionNet_weight_middle', [lstm_size, n_middle_character], tf.float32),
         # 'waf': tf.get_variable('actionNet_weight_final', [lstm_size, n_final_character], tf.float32),
         # for glimpse network
-        'wg1': weight_variable([3, 3, channels, 16], 'glimpseNet_weight_conv1'),
-        'wg2': weight_variable([3, 3, 16, 64], 'glimpseNet_weight_conv2'),
-        'wg3': weight_variable([3, 3, 64, 3], 'glimpseNet_weight_conv3'),
+        # 'wg1': weight_variable([3, 3, channels, 8], 'glimpseNet_weight_conv1'),
+        'wg1': weight_variable([3, 3, g_depth, 8], 'glimpseNet_weight_conv1'),
+        'wg2': weight_variable([3, 3, 8, 3], 'glimpseNet_weight_conv2'),
+        # 'wg3': weight_variable([3, 3, 64, 3], 'glimpseNet_weight_conv3'),
         'wg_fc': weight_variable([sensor_bandwidth * sensor_bandwidth * 3, lstm_size], 'glimpseNet_weight_fc'),
         'wg_lh': weight_variable([2, lstm_size], 'glimpseNet_weight_loc2hidden'),
         'wg_gh_gf': weight_variable([lstm_size, lstm_size], 'glimpseNet_weight_glimpse2feature'),
@@ -159,9 +196,9 @@ if __name__ == '__main__':
     }
     b = {
         # for context network
-        'bc1': bias_variable([16], 'contextNet_bias_conv1'),
-        'bc2': bias_variable([64], 'contextNet_bias_conv2'),
-        'bc3': bias_variable([3], 'contextNet_bias_conv3'),
+        'bc1': bias_variable([8], 'contextNet_bias_conv1'),
+        'bc2': bias_variable([3], 'contextNet_bias_conv2'),
+        # 'bc3': bias_variable([3], 'contextNet_bias_conv3'),
         'bc_fc': bias_variable([lstm_size * 2], 'contextNet_bias_fc'),
 
         # 'bc1': tf.get_variable('contextNet_bias_conv1', [16], tf.float32),
@@ -181,9 +218,9 @@ if __name__ == '__main__':
         # 'bam': tf.get_variable('actionNet_bias_middle', [n_middle_character], tf.float32),
         # 'baf': tf.get_variable('actionNet_bias_final', [n_final_character], tf.float32),
         # for glimpse network
-        'bg1': bias_variable([16], 'glimpseNet_bias_conv1'),
-        'bg2': bias_variable([64], 'glimpseNet_bias_conv2'),
-        'bg3': bias_variable([3], 'glimpseNet_bias_conv3'),
+        'bg1': bias_variable([8], 'glimpseNet_bias_conv1'),
+        'bg2': bias_variable([3], 'glimpseNet_bias_conv2'),
+        # 'bg3': bias_variable([3], 'glimpseNet_bias_conv3'),
         'bg_fc': bias_variable([lstm_size], 'glimpseNet_bias_fc'),
         'bg_lh': bias_variable([lstm_size], 'glimpseNet_bias_loc2hidden'),
         'bg_glh_gf': bias_variable([lstm_size], 'glimpseNet_bias_feature'),
@@ -201,25 +238,30 @@ if __name__ == '__main__':
 
     # Model Build
     print(' Building model..')
-    outputs, mean_locs, sampled_locs, baselines, actions, predicted_labels = model(x, w, b)
+    outputs, mean_locs, sampled_locs, baselines, actions, action_logits, predicted_labels = model2(x, w, b)
 
     # Loss Fuction
     print(' Defining loss function..')
-    logllratios, cross_entropies, baseline_mse, total_loss, grads, var_list, acc_i, acc_m, acc_f = losses(
+    logllratios, cross_entropies, baseline_mse, total_loss, grads, var_list, accs = losses2(
         actions=actions,
+        action_logits=action_logits,
         mean_locs=mean_locs,
         sampled_locs=sampled_locs,
         baselines=baselines,
         labels=Y)
-    acc_i = tf.reduce_mean(acc_i)
-    acc_m = tf.reduce_mean(acc_m)
-    acc_f = tf.reduce_mean(acc_f)
-    acc_total = tf.reduce_mean(tf.stack([acc_i, acc_m, acc_f]))
+
+    acc_element = [tf.reduce_mean(acc) for acc in accs]
+    acc_total = tf.reduce_mean(tf.stack(acc_element))
+
+    # Reconstruction Building.. (for pretraining)
+    if pretrain_flag:
+        c_recon, c_recon_cost, g_recon, g_recon_cost, total_recon_cost, train_op_r = pretrain_losses(x, w, b)
 
     # Optimizer
     print(' Creating optimizer..')
     optimizer = tf.train.AdamOptimizer(lr)
-    train_op = optimizer.apply_gradients(zip(grads, var_list))
+    # train_op = optimizer.apply_gradients(zip(grads, var_list))
+    train_op = optimizer.minimize(total_loss)
 
     # tensorboard visualization for the parameters
     print(' Summarizing tensor variables and scalar to visualize by tensorboard..')
@@ -228,8 +270,8 @@ if __name__ == '__main__':
     variable_summaries(b['bc1'], "contextNet_bias_conv1")
     variable_summaries(w['wc2'], "contextNet_weight_conv2")
     variable_summaries(b['bc2'], "contextNet_bias_conv2")
-    variable_summaries(w['wc3'], "contextNet_weight_conv3")
-    variable_summaries(b['bc3'], "contextNet_bias_conv3")
+    # variable_summaries(w['wc3'], "contextNet_weight_conv3")
+    # variable_summaries(b['bc3'], "contextNet_bias_conv3")
     # for emission network
     variable_summaries(w['we_bl'], "emissionNet_weight_baseline")
     variable_summaries(b['be_bl'], "emissionNet_bias_baseline")
@@ -247,8 +289,8 @@ if __name__ == '__main__':
     variable_summaries(b['bg1'], "glimpseNet_bias_conv1")
     variable_summaries(w['wg2'], "glimpseNet_weight_conv2")
     variable_summaries(b['bg2'], "glimpseNet_bias_conv2")
-    variable_summaries(w['wg3'], "glimpseNet_weight_conv3")
-    variable_summaries(b['bg3'], "glimpseNet_bias_conv3")
+    # variable_summaries(w['wg3'], "glimpseNet_weight_conv3")
+    # variable_summaries(b['bg3'], "glimpseNet_bias_conv3")
     variable_summaries(w['wg_fc'], "glimpseNet_weight_fc")
     variable_summaries(b['bg_fc'], "glimpseNet_bias_fc")
 
@@ -265,17 +307,20 @@ if __name__ == '__main__':
     variable_summaries(b['bo'], "coreNet_bias_out")
 
     # tensorboard visualization for the performance metrics
-    tf.summary.scalar("loglikelihood_ratio", logllratios)
-    tf.summary.scalar("baseline_mse", baseline_mse)
-    tf.summary.scalar("cross_entropies", cross_entropies)
-    tf.summary.scalar("accuracy_initial", acc_i)
-    tf.summary.scalar("accuracy_middle", acc_m)
-    tf.summary.scalar("accuracy_final", acc_f)
-    tf.summary.scalar("accuracy_total", acc_total)
-    tf.summary.scalar("total_loss", total_loss)
+    tf.summary.scalar("Loss/loglikelihood_ratio", logllratios)
+    tf.summary.scalar("Loss/baseline_mse", baseline_mse)
+    tf.summary.scalar("Loss/cross_entropies", cross_entropies)
+    for i, acc_arg in enumerate(acc_element):
+        tf.summary.scalar("Accuracy/accuracy_%d_element" % (i+1), acc_arg)
+    # tf.summary.scalar("Accuracy/accuracy_initial", acc_i)
+    # tf.summary.scalar("Accuracy/accuracy_middle", acc_m)
+    # tf.summary.scalar("Accuracy/accuracy_final", acc_f)
+    tf.summary.scalar("Accuracy/accuracy_total", acc_total)
+    tf.summary.scalar("Loss/total_loss", total_loss)
     summary_op = tf.summary.merge_all()
+
+    ############################################################### Training #####################
     # Model Training
-    total_step = 5000
 
     # Data set : PHD08
     print(' Loading datasets..')
@@ -294,7 +339,11 @@ if __name__ == '__main__':
 
     summary_writer = tf.summary.FileWriter(summary_path, graph=sess.graph)
 
-    # Training
+    # Pre-Training context, glimpse net using reconstruction error
+    if pretrain_flag:
+        pretrain(c_recon, c_recon_cost, g_recon, g_recon_cost, total_recon_cost, train_op_r, pretrain_step)
+
+
     print(' Training Start..!')
     for step in range(total_step):
         start_time = time.time()
@@ -304,29 +353,44 @@ if __name__ == '__main__':
 
         feed_dict = {x: next_images, Y: next_labels}
 
-        fetches = [train_op, total_loss, baseline_mse, cross_entropies, acc_i, acc_m, acc_f, acc_total,
+        fetches = [train_op, total_loss, baseline_mse, cross_entropies, acc_element, acc_total,
                    mean_locs, predicted_labels]
 
-        _, t_loss, b_mse, x_ent, i_acc, m_acc, f_acc, t_acc, m_locs, p_labels = sess.run(fetches, feed_dict=feed_dict)
+        _, t_loss, b_mse, x_ent, acc_list, t_acc, m_locs, p_labels = sess.run(fetches, feed_dict=feed_dict)
 
         duration = time.time() - start_time
-
+        if step == 0:
+            print(type(acc_list), acc_list)
         if step % 50 == 0:
             print('Step %d: total_loss = %.5f, t_acc = %.3f (%.3f sec) mse = %.5f, x_ent = %.5f' % (step, t_loss,
                                                                                                     t_acc, duration,
-                                                                                                    b_mse, x_ent))
+                                                                                                    b_mse, x_ent*0.1))
 
             summary_str = sess.run(summary_op, feed_dict=feed_dict)
             summary_writer.add_summary(summary_str, step)
 
-            if step % 500 == 0:
+            if step > 0 and step % 10000 == 0:
                 saver.save(sess, os.path.join(save_path, str(step) + ".ckpt"))
-                evaluate(dataset, sess, [x, Y, acc_total, acc_i, acc_m, acc_f])
+                evaluate(dataset, sess, [x, Y, acc_total] + [arg for arg in acc_list])
                 mls = np.array(m_locs)
 
                 print('   mean locations: ', mls[:,0,:])
+            if step % 500 == 0 and n_element_per_character == 3:
+                for i in range(min(batch_size, 3)):
+                    predicted_label = p_labels[:, i]
+                    true_label = next_labels[i]
 
-            if draw:
+                    label_str = "   >>> True Label : [" \
+                                + dataset.i2c_i[true_label[0]] \
+                                + dataset.i2c_m[true_label[1]] \
+                                + dataset.i2c_f[true_label[2]] \
+                                + "]   Predicted Label: [" \
+                                + dataset.i2c_i[predicted_label[0]] \
+                                + dataset.i2c_m[predicted_label[1]] \
+                                + dataset.i2c_f[predicted_label[2]] + "]"
+                    print(label_str)
+
+            if step % 1000 == 0 and draw:
                 def visualize_glimpse_movement(image, locs):
                     r_image = cv2.resize(image, (image.shape[1] * 15, image.shape[0] * 15))
                     r_image = np.expand_dims(r_image, -1)
@@ -345,11 +409,17 @@ if __name__ == '__main__':
                         pts.append((x, y))
 
                         cv2.circle(disp, (x, y), 1, (0, 255, 0), 3)
-                    cv2.circle(disp, pts[0], 1, (255, 0, 0), 4)
-                    cv2.circle(disp, pts[-1], 1, (0, 0, 255), 4)
 
+                    start_color = 100
+                    color_gap = (255 - start_color) // (len(pts) - 1)
                     for i in range(len(pts) - 1):
+                        color = min(255, start_color + i * color_gap)
+                        cv2.line(disp, pts[i], pts[i+1], (0, color, 0), 2)
                         cv2.line(disp, pts[i], pts[i + 1], (0, 255, 0), 2)
+                        cv2.circle(disp, pts[i], 4, (0, 255, 0), 3)
+
+                    cv2.circle(disp, pts[0], 4, (255, 0, 0), 4)
+                    cv2.circle(disp, pts[-1], 4, (0, 0, 255), 4)
                     return disp
 
                 m_locs = np.array(m_locs)
