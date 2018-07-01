@@ -361,9 +361,9 @@ if __name__ == '__main__':
         feed_dict = {x: next_images, Y: next_labels}
 
         fetches = [train_op, total_loss, baseline_mse, cross_entropies, acc_element, acc_total,
-                   mean_locs, predicted_labels]
+                   sampled_locs, predicted_labels]
 
-        _, t_loss, b_mse, x_ent, acc_list, t_acc, m_locs, p_labels = sess.run(fetches, feed_dict=feed_dict)
+        _, t_loss, b_mse, x_ent, acc_list, t_acc, s_locs, p_labels = sess.run(fetches, feed_dict=feed_dict)
 
         duration = time.time() - start_time
         if step % 50 == 0:
@@ -377,9 +377,9 @@ if __name__ == '__main__':
             if step > 0 and step % 10000 == 0:
                 saver.save(sess, os.path.join(save_path, str(step) + ".ckpt"))
                 evaluate(dataset, sess, [x, Y, acc_total] + acc_element)
-                mls = np.array(m_locs)
+                mls = np.array(s_locs)
 
-                print('   mean locations: ', mls[:,0,:])
+                print('   sampled locations: ', mls[:,0,:])
             if step % 500 == 0 and n_element_per_character == 3:
                 for i in range(min(batch_size, 3)):
                     predicted_label = p_labels[:, i]
@@ -427,11 +427,11 @@ if __name__ == '__main__':
                     cv2.circle(disp, pts[-1], 4, (0, 0, 255), 4)
                     return disp
 
-                m_locs = np.array(m_locs)
-                m_locs = np.transpose(m_locs, [1, 0, 2])
+                s_locs = np.array(s_locs)
+                s_locs = np.transpose(s_locs, [1, 0, 2])
                 disp_list = []
                 for i in range(min(batch_size, 3)):
-                    disp = visualize_glimpse_movement(next_images[i], m_locs[i])
+                    disp = visualize_glimpse_movement(next_images[i], s_locs[i])
                     cv2.imwrite(os.path.join(image_log_path, 'glimpse_%d_(%d).png' % (step, i)), disp)
 
     sess.close()

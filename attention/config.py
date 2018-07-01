@@ -3,7 +3,7 @@ Here are some variables(parameters) for attention network and train it.
 '''
 
 batch_size = 16
-img_sz = 64 # 28
+img_sz = 28 # 28
 img_len = img_sz*img_sz
 n_itr = 10000
 n_class = 10
@@ -28,13 +28,13 @@ std = 0.03
 channels = 1
 g_depth = 3  # depth of glimpse sensors : glimpse feature를 추출하기 위해 3단계의 영역 추출
 
-patch_size = 3  # Glimpse 영역. loc 기준 주변을 보는 영역의 크기
+patch_size = 2  # Glimpse 영역. loc 기준 주변을 보는 영역의 크기
 
 sensor_bandwidth = 12   # 잘라온 패치를 sensor_bandwidth 크기로 resize
 total_sensor_bandwidth = g_depth * channels * (sensor_bandwidth**2)
 
 eye_centered = False
-loc_sd = 0.22  # 0.22
+loc_sd = 0.11  # 0.22
 
 # Training
 total_step = 100000 + 1

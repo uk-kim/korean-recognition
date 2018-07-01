@@ -158,7 +158,7 @@ def emission_network(output, w, b, prev_loc=None):
             mean_loc = tf.matmul(core_net_out, w['we_h_nl']) + b['be_h_nl'] + prev_loc
         else:
             mean_loc = tf.matmul(core_net_out, w['we_h_nl']) + b['be_h_nl']
-        mean_loc = tf.clip_by_value(mean_loc, -1, 1)
+        # mean_loc = tf.clip_by_value(mean_loc, -1, 1)
 
     # add noise
     sample_loc = tf.clip_by_value(mean_loc + tf.random_normal(mean_loc.get_shape(), 0, loc_sd), -1, 1)
