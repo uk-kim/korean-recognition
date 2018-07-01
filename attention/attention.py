@@ -139,7 +139,7 @@ def context_network(img, w, b):
     return tf.nn.relu(fc)
 
 
-def emission_network(output, w, b):
+def emission_network(output, w, b, prev_loc=None):
     # the next location is computed by the location network next of core-net(Level 2 RNN Cell)
     core_net_out = tf.stop_gradient(output)
 
@@ -149,9 +149,15 @@ def emission_network(output, w, b):
     if eye_centered:
         # add the last sampled glimpse location
         # TODO max(-1, min(1, u + N(output, sigma) + prevLoc)
-        mean_loc = tf.maximum(-1.0, tf.minimum(1.0, tf.matmul(core_net_out, w['we_h_nl'])))
+        if prev_loc is not None:
+            mean_loc = tf.maximum(-1.0, tf.minimum(1.0, tf.matmul(core_net_out, w['we_h_nl']) + prev_loc))
+        else:
+            mean_loc = tf.maximum(-1.0, tf.minimum(1.0, tf.matmul(core_net_out, w['we_h_nl'])))
     else:
-        mean_loc = tf.matmul(core_net_out, w['we_h_nl']) + b['be_h_nl']
+        if prev_loc is not None:
+            mean_loc = tf.matmul(core_net_out, w['we_h_nl']) + b['be_h_nl'] + prev_loc
+        else:
+            mean_loc = tf.matmul(core_net_out, w['we_h_nl']) + b['be_h_nl']
         mean_loc = tf.clip_by_value(mean_loc, -1, 1)
 
     # add noise
@@ -219,7 +225,7 @@ def model(x, w, b):
             output = tf.sigmoid(tf.add(tf.matmul(h1, w['wo']), b['bo']))
         with tf.variable_scope('rnn2', reuse=True):
             h2, state2 = rnn2(h1, state2)
-            mean_loc, sampled_loc, baseline = emission_network(h2, w, b)
+            mean_loc, sampled_loc, baseline = emission_network(h2, w, b, sampled_loc)
 
         logit, action = action_network(output, w, b, t)
 
