@@ -73,6 +73,9 @@ def evaluate(datasets, sess, tensors):
         images, labels = data.next_batch(batch_size)
         if images.shape[0] != batch_size:
             images, labels = dataset.train_data.next_batch(batch_size)
+        if images[0].shape[0] != img_sz or images[0].shape[1] != img_sz:
+            images = np.array([cv2.resize(img, (img_sz, img_sz)) for img in images])
+            images = np.expand_dims(images, -1)
         accs = sess.run(tensors[2:], feed_dict={tensors[0]: images, tensors[1]: labels})
         for i in range(len(_acc_element)):
             _acc_element[i] += accs[i]
@@ -121,15 +124,15 @@ if __name__ == '__main__':
     args = {
         'dataset': 'phd08',
         'dataset_path': '/Users/kimsu/datasets/korean_image/phd08',
-        'width': 28,
-        'height': 28,
+        'width': img_sz,
+        'height': img_sz,
         'sampling': True,
         'n_sample': 50,
         'train_set_ratio': 0.9
     }
     args['data_size'] = args['width'] * args['height']
 
-    base_path = os.path.join(os.path.curdir, '20180629')
+    base_path = os.path.join(os.path.curdir, '20180701')
     summary_path = os.path.join(base_path, 'summary')
     save_path = os.path.join(base_path, 'save')
     image_log_path = os.path.join(base_path, 'image_log')
@@ -146,7 +149,7 @@ if __name__ == '__main__':
     draw = True
 
     # input / label image tensor
-    x = tf.placeholder(tf.float32, [batch_size, 28, 28, 1], name='image')
+    x = tf.placeholder(tf.float32, [batch_size, img_sz, img_sz, 1], name='image')
     Y = tf.placeholder(tf.int64, shape=[batch_size, 3], name='label')
 
     # Weight and Bias variables
@@ -351,6 +354,10 @@ if __name__ == '__main__':
         if next_images.shape[0] != batch_size:
             next_images, next_labels = dataset.train_data.next_batch(batch_size)
 
+        if next_images[0].shape[0] != img_sz or next_images[0].shape[1] != img_sz:
+            next_images = np.array([cv2.resize(img, (img_sz, img_sz)) for img in next_images])
+            next_images = np.expand_dims(next_images, -1)
+
         feed_dict = {x: next_images, Y: next_labels}
 
         fetches = [train_op, total_loss, baseline_mse, cross_entropies, acc_element, acc_total,
@@ -390,11 +397,11 @@ if __name__ == '__main__':
 
             if step % 1000 == 0 and draw:
                 def visualize_glimpse_movement(image, locs):
-                    r_image = cv2.resize(image, (image.shape[1] * 15, image.shape[0] * 15))
+                    rows = 400
+                    cols = 400
+                    r_image = cv2.resize(image, (cols, rows))
                     r_image = np.expand_dims(r_image, -1)
 
-                    rows = r_image.shape[0]
-                    cols = r_image.shape[1]
                     n_channel = r_image.shape[2]
                     disp = r_image.copy()
                     if n_channel == 1:
@@ -413,8 +420,8 @@ if __name__ == '__main__':
                     for i in range(len(pts) - 1):
                         color = min(255, start_color + i * color_gap)
                         cv2.line(disp, pts[i], pts[i+1], (0, color, 0), 2)
-                        cv2.line(disp, pts[i], pts[i + 1], (0, 255, 0), 2)
-                        cv2.circle(disp, pts[i], 4, (0, 255, 0), 3)
+                        # cv2.line(disp, pts[i], pts[i + 1], (0, 255, 0), 2)
+                        cv2.circle(disp, pts[i], 4, (0, color, 0), 3)
 
                     cv2.circle(disp, pts[0], 4, (255, 0, 0), 4)
                     cv2.circle(disp, pts[-1], 4, (0, 0, 255), 4)
