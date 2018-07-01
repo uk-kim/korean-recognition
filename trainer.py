@@ -69,12 +69,12 @@ def evaluate(datasets, sess, tensors):
 
     n_iter = min(10, data.n_data // batch_size)
 
-    for i in range(n_iter):
+    for _ in range(n_iter):
         images, labels = data.next_batch(batch_size)
         if images.shape[0] != batch_size:
             images, labels = dataset.train_data.next_batch(batch_size)
         accs = sess.run(tensors[2:], feed_dict={tensors[0]: images, tensors[1]: labels})
-        for i in range(_acc_element):
+        for i in range(len(_acc_element)):
             _acc_element[i] += accs[i]
 
     for i in range(len(_acc_element)):
@@ -82,7 +82,7 @@ def evaluate(datasets, sess, tensors):
 
     acc_str = " >> TOTAL ACCURACY: %.3f" % _acc_element[0]
     for i in range(len(_acc_element) - 1):
-        acc_str += ", %d th ACCURACY: %.3f" % _acc_element[i+1]
+        acc_str += ", %d th ACCURACY: %.3f" % (i, _acc_element[i+1])
 
     print(acc_str)
     # print(" >> TOTAL ACCURACY: %.3f, INITIAL ACCURACY: %.3f, MIDDLE ACCURACY: %.3f, FINAL ACCURACY: %.3f" %
@@ -359,8 +359,6 @@ if __name__ == '__main__':
         _, t_loss, b_mse, x_ent, acc_list, t_acc, m_locs, p_labels = sess.run(fetches, feed_dict=feed_dict)
 
         duration = time.time() - start_time
-        if step == 0:
-            print(type(acc_list), acc_list)
         if step % 50 == 0:
             print('Step %d: total_loss = %.5f, t_acc = %.3f (%.3f sec) mse = %.5f, x_ent = %.5f' % (step, t_loss,
                                                                                                     t_acc, duration,
@@ -371,7 +369,7 @@ if __name__ == '__main__':
 
             if step > 0 and step % 10000 == 0:
                 saver.save(sess, os.path.join(save_path, str(step) + ".ckpt"))
-                evaluate(dataset, sess, [x, Y, acc_total] + [arg for arg in acc_list])
+                evaluate(dataset, sess, [x, Y, acc_total] + acc_element)
                 mls = np.array(m_locs)
 
                 print('   mean locations: ', mls[:,0,:])
@@ -424,8 +422,6 @@ if __name__ == '__main__':
 
                 m_locs = np.array(m_locs)
                 m_locs = np.transpose(m_locs, [1, 0, 2])
-                # print(mean_locs)
-                # print('m_locs:', m_locs.shape, m_locs)
                 disp_list = []
                 for i in range(min(batch_size, 3)):
                     disp = visualize_glimpse_movement(next_images[i], m_locs[i])

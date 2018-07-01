@@ -37,8 +37,8 @@ eye_centered = False
 loc_sd = 0.11  # 0.22
 
 # Training
-total_step = 100000
-pretrain_step = 3000
+total_step = 100000 + 1
+pretrain_step = 3000 + 1
 
 
 pretrain_flag = False
